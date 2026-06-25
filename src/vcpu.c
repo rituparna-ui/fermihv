@@ -11,6 +11,7 @@ extern void guest_counter_entry(void);
 extern void guest_vuart_entry(void);
 extern void guest_virq_entry(void);
 extern void guest_vgic_entry(void);
+extern void guest_ipi_entry(void);
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -282,6 +283,79 @@ void vgic_demo(int nticks) {
 	hyptimer_stop();
 	uart_printf("[M13] vGIC delivered %u interrupts through the emulated "
 	            "distributor.\n", ticks);
+}
+
+/* ------------------------------------------------------------------ */
+/* M14: SMP groundwork -- virtual IPIs (SGIs) between vCPUs            */
+/* ------------------------------------------------------------------ */
+
+void smp_demo(void) {
+	stage2_init();
+	vgic_reset();
+
+	/* RW | VM | DC | IMO. ICH_HCR_EL2 = En | TC (bit 8): TC traps only the
+	 * SGI registers (ICC_SGI1R etc.) so we can route virtual IPIs; the rest
+	 * of the CPU interface (PMR/IGRPEN1/IAR/EOIR) stays on the ICV fast path. */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"((1UL << 0) | (1UL << 8)));
+	__asm__ volatile("isb");
+
+	for (int i = 0; i < 2; i++) {
+		vcpu_init(&vcpus[i], (uint64_t)&guest_ipi_entry,
+		          (uint64_t)(gstack[i] + sizeof(gstack[i])), stage2_vttbr(), i);
+		vcpus[i].x[0] = i;       /* tell each vCPU its id */
+	}
+
+	uart_println("[M14] SMP: vCPU0 sends a virtual IPI (SGI) to vCPU1 via the vGIC");
+
+	int got = 0;
+	for (int round = 0; round < 50 && !got; round++) {
+		for (int i = 0; i < 2 && !got; i++) {
+			int s = vgic_pop_sgi(i);
+			if (s >= 0) {
+				vgic_inject((uint32_t)s);
+				uart_printf("[M14] injecting SGI %d into vCPU%d's list register\n",
+				            s, i);
+			}
+
+			vcpu_run_once(&vcpus[i]);
+
+			if ((vcpus[i].exit_reason & 3) == 1) {
+				uint64_t iar = gic_ack();
+				if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+					gic_eoi(iar);
+				continue;
+			}
+
+			uint64_t ec = ESR_EC(vcpus[i].exit_esr);
+			if (ec == EC_SYSREG) {
+				/* trapped ICC_SGI1R write: route the SGI to the other vCPU(s) */
+				uint64_t iss = ESR_ISS(vcpus[i].exit_esr);
+				int rt = (iss >> 5) & 0x1F;
+				uint64_t val = (rt == 31) ? 0 : vcpus[i].x[rt];
+				uint32_t intid = (val >> 24) & 0xF;
+				vgic_post_sgi(i, intid);
+				uart_printf("[M14] vCPU%d issued ICC_SGI1R -> SGI %u (trapped)\n",
+				            i, intid);
+				vcpus[i].pc += 4;
+			} else if (ec == EC_HVC64) {
+				if (i == 0) {
+					/* sender's post-send yield: nothing to do */
+				} else {
+					uart_printf("[M14] vCPU1 RECEIVED virtual IPI: SGI INTID %u "
+					            "(from vCPU0) via ICV\n", vcpus[i].x[0]);
+					got = 1;
+				}
+			} else {
+				uart_printf("[M14] vCPU%d unexpected exit ec=%x (%s)\n",
+				            i, ec, ec_name(ec));
+				got = 1;
+			}
+		}
+	}
+	uart_println(got ? "[M14] virtual IPI delivered between vCPUs through the vGIC."
+	                 : "[M14] IPI not delivered (timeout).");
 }
 
 /* ------------------------------------------------------------------ */

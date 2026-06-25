@@ -31,6 +31,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M11 | **Persistent storage**: virtio-blk + ext4, writes survive reboots |
 | M12 | **fermi-os as a guest**: another from-scratch kernel boots to its EL0 shell (EL2→EL1→EL0) |
 | M13 | **Software vGIC**: emulated GICD/GICR (trap+emulate) gates virtual interrupt injection |
+| M14 | **Virtual IPIs**: vCPU0 sends an SGI to vCPU1 through the vGIC (SMP groundwork) |
 
 ## Architecture
 

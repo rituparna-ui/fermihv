@@ -209,3 +209,86 @@ gvgic_irq:
 
 gvgic_bad:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M14 guest: two vCPUs; vCPU0 sends a virtual IPI (SGI) to vCPU1.      */
+/* x0 on entry = this vCPU's id (seeded by the hypervisor).            */
+/* ------------------------------------------------------------------ */
+.global guest_ipi_entry
+guest_ipi_entry:
+	mov	x22, x0                  /* save cpu id */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gipi_vectors
+	msr	vbar_el1, x0
+	isb
+	msr	daifclr, #2
+	cbnz	x22, gipi_wait           /* id != 0 -> receiver */
+
+	/* sender (vCPU0): generate SGI INTID 1, IRM=1 (all PEs except self) */
+	mov	x0, #1
+	lsl	x0, x0, #24              /* INTID 1 in bits[27:24] */
+	mov	x1, #1
+	lsl	x1, x1, #40              /* IRM = 1 */
+	orr	x0, x0, x1
+	msr	icc_sgi1r_el1, x0        /* traps to EL2 (ICH_HCR_EL2.TC) */
+	mov	x0, #0x5E0D              /* "sent" marker */
+	hvc	#0
+gipi_wait:
+	wfi
+	b	gipi_wait
+
+	.balign 2048
+gipi_vectors:
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_irq                 /* idx 5: Cur EL SPx IRQ */
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+	.balign 0x80
+	b	gipi_bad
+
+gipi_irq:
+	sub	sp, sp, #32
+	stp	x0, x1, [sp]
+	stp	x29, x30, [sp, #16]
+	mrs	x0, icc_iar1_el1         /* received vINTID (the SGI) */
+	msr	icc_eoir1_el1, x0
+	hvc	#0                       /* report INTID in x0 to the hypervisor */
+	ldp	x29, x30, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #32
+	eret
+
+gipi_bad:
+	b	.

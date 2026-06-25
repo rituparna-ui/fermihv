@@ -27,4 +27,14 @@ void vgic_mmio(vcpu_t *v, uint64_t ipa);
  * virtual interrupt injection. */
 int vgic_irq_enabled(uint32_t intid);
 
+/* --- virtual SGIs (inter-processor interrupts) --- */
+#define VGIC_MAX_VCPUS 4
+
+/* Route an SGI sent by vCPU `self` (a trapped ICC_SGI1R write, IRM=1 /
+ * all-but-self semantics): mark `intid` pending on every other vCPU. */
+void vgic_post_sgi(int self, uint32_t intid);
+
+/* Pop the lowest pending SGI for `vcpu` (clearing it), or -1 if none. */
+int vgic_pop_sgi(int vcpu);
+
 #endif /* FERMIHV_VGIC_H */

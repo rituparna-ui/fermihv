@@ -67,6 +67,9 @@ void hv_main(void) {
 	/* M13: software vGIC -- guest drives an emulated GICD/GICR distributor. */
 	vgic_demo(5);
 
+	/* M14: SMP groundwork -- virtual IPI between two vCPUs via the vGIC. */
+	smp_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();

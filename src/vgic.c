@@ -15,6 +15,7 @@
 static uint32_t g_gicd_ctlr;
 static uint32_t g_enabled;   /* SGI/PPI enable bitmap (INTID 0..31) */
 static uint32_t g_group;     /* GICR_IGROUPR0 */
+static uint32_t g_sgi_pending[VGIC_MAX_VCPUS];  /* per-vCPU pending SGIs */
 
 int vgic_contains(uint64_t ipa) {
 	return (ipa >= VGIC_GICD_BASE && ipa < VGIC_GICD_BASE + VGIC_GICD_SIZE) ||
@@ -25,6 +26,26 @@ void vgic_reset(void) {
 	g_gicd_ctlr = 0;
 	g_enabled = 0;
 	g_group = 0;
+	for (int i = 0; i < VGIC_MAX_VCPUS; i++)
+		g_sgi_pending[i] = 0;
+}
+
+void vgic_post_sgi(int self, uint32_t intid) {
+	for (int i = 0; i < VGIC_MAX_VCPUS; i++)
+		if (i != self)
+			g_sgi_pending[i] |= (1u << (intid & 0x1F));
+}
+
+int vgic_pop_sgi(int vcpu) {
+	if (vcpu < 0 || vcpu >= VGIC_MAX_VCPUS || g_sgi_pending[vcpu] == 0)
+		return -1;
+	for (int b = 0; b < 16; b++) {
+		if (g_sgi_pending[vcpu] & (1u << b)) {
+			g_sgi_pending[vcpu] &= ~(1u << b);
+			return b;
+		}
+	}
+	return -1;
 }
 
 int vgic_irq_enabled(uint32_t intid) {

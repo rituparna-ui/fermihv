@@ -66,6 +66,9 @@ void virq_demo(int nticks);
 /* M13 demo: guest drives an emulated GICv3 distributor (software vGIC). */
 void vgic_demo(int nticks);
 
+/* M14 demo: virtual IPI (SGI) from one vCPU to another via the vGIC. */
+void smp_demo(void);
+
 /* M7 demo: load a separately-built guest kernel image and boot it at EL1. */
 void real_guest_demo(void);
 
