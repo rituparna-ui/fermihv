@@ -46,6 +46,12 @@ void el2_exception_dispatch(uint64_t vector_index, struct el2_frame *f) {
 	uart_printf("          elr=%x spsr=%x far=%x\n", f->elr, f->spsr, f->far);
 
 	switch (ec) {
+	case EC_HVC64:
+		/* Guest hypercall. imm16 is in ISS; arguments by convention in
+		 * x0.. . ELR_EL2 already points past the HVC, so do NOT advance. */
+		uart_printf("          HVC #%x from guest, x0=%x -> handled, resuming\n",
+		            ESR_ISS(f->esr) & 0xFFFF, f->x[0]);
+		return;
 	case EC_BRK:
 		/* Software breakpoint: skip the 4-byte BRK and resume. This proves
 		 * the full save -> decode -> mutate-frame -> restore -> eret loop. */

@@ -1,5 +1,6 @@
 #include "uart.h"
 #include "exception.h"
+#include "vm.h"
 #include <stdint.h>
 
 static inline uint64_t read_currentel(void) {
@@ -30,6 +31,10 @@ void hv_main(void) {
 	uart_println("[M1] Triggering deliberate BRK #0xBEEF ...");
 	__asm__ volatile("brk #0xBEEF");
 	uart_println("[M1] Resumed after BRK -> EL2 trap+recover works.");
+
+	/* M2: drop to a bare EL1 guest and trap its hypercalls. */
+	uart_println("[M2] Launching first EL1 guest (world switch)...");
+	vm_run_guest();
 
 	uart_println("[BOOT] M1 reached. Parking CPU.");
 }
