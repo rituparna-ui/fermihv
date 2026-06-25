@@ -29,6 +29,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M9 | **Interactive busybox shell** on the Linux guest |
 | M10 | **Guest networking**: virtio-net + DNS + HTTP over SLIRP NAT |
 | M11 | **Persistent storage**: virtio-blk + ext4, writes survive reboots |
+| M12 | **fermi-os as a guest**: another from-scratch kernel boots to its EL0 shell (EL2→EL1→EL0) |
 
 ## Architecture
 
@@ -71,3 +72,20 @@ separately and not committed. With busybox present the initramfs gives an
 interactive shell; with the modules present the guest brings up a virtio-net
 NIC (QEMU usermode/SLIRP) — `/init` configures `eth0` (10.0.2.15), resolves
 DNS, and fetches a page over HTTP to prove connectivity.
+
+### Booting fermi-os as a guest (M12)
+
+FermiHV can also host another from-scratch kernel, [fermi-os](https://github.com/rituparna-ui/fermi-os),
+which boots to its own EL0 shell (so the stack is EL2 hypervisor → EL1 guest
+kernel → EL0 guest userspace). Put a copy at `fermios-src/` (gitignored) with
+three guest-friendly tweaks, then run `./run.sh fermios`:
+
+- `src/mm/pmm/pmm.h`: cap `MEM_SIZE` (e.g. 256 MiB) so its allocator can't
+  reach the hypervisor's high RAM.
+- `src/kernel.c`: skip the PCI/virtio/FAT/net init (high-MMIO devices aren't
+  passed through) and keep only `task_shell`.
+
+The hypervisor embeds the resulting `kernel.bin` and memcpy's it to its native
+`0x40000000` at runtime (the embedded approach avoids a ROM-load overlap with
+QEMU's auto-DTB at the RAM base). The build falls back to a placeholder when
+`fermios-src/` is absent, so the hypervisor always builds standalone.

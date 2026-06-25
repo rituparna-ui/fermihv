@@ -68,9 +68,18 @@ void hv_main(void) {
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();
 
-	/* M7 (goal): boot a real Linux kernel. Only meaningful when QEMU's
-	 * generic loader has placed an Image + DTB in RAM (./run.sh linux). */
-	linux_boot();
+	/* Boot a guest based on what the loader placed at 0x41000000:
+	 *  - Linux Image (arm64 magic at +56), else
+	 *  - fermi-os (non-zero first word). QEMU's auto-DTB sits at 0x40000000. */
+	uint32_t lmagic = *(volatile uint32_t *)(0x41000000UL + 56);
+	uint32_t marker = *(volatile uint32_t *)0x46000000UL;
+	if (lmagic == 0x644d5241UL) {
+		linux_boot();
+	} else if (marker == 0x0FE33105UL) {
+		fermios_boot();   /* embedded fermi-os image, selected by ./run.sh fermios */
+	} else {
+		uart_println("[HV] no guest image loaded; demos only.");
+	}
 
 	uart_println("[HV] Done. Parking CPU.");
 }

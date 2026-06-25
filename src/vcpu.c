@@ -389,3 +389,79 @@ void linux_boot(void) {
 	uart_println("------------------------------------------------------------");
 	uart_println("[M7] Linux guest run ended.");
 }
+
+/* ------------------------------------------------------------------ */
+/* M12: boot fermi-os (a separate from-scratch kernel) as a guest      */
+/* ------------------------------------------------------------------ */
+
+#define FERMIOS_LOAD_IPA 0x40000000UL   /* fermi-os links/loads here */
+
+void fermios_boot(void) {
+	stage2_init();                       /* Normal RAM block @0x40000000 */
+	stage2_map_1gb_device(0x0UL);        /* passthrough GIC + UART (block 0) */
+
+	/* Place the embedded fermi-os image at its native load address (this
+	 * overwrites QEMU's auto-DTB at the RAM base, which fermi-os ignores). */
+	extern char fermios_image_start[], fermios_image_end[];
+	uint64_t sz = (uint64_t)(fermios_image_end - fermios_image_start);
+	volatile uint8_t *dst = (volatile uint8_t *)FERMIOS_LOAD_IPA;
+	for (uint64_t i = 0; i < sz; i++)
+		dst[i] = ((uint8_t *)fermios_image_start)[i];
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("ic ialluis");
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("isb");
+	uart_printf("[M12] placed %u-byte fermi-os image at %x\n", sz, FERMIOS_LOAD_IPA);
+
+	wr_sysreg("cnthctl_el2", 3UL);       /* EL1 physical timer access */
+	wr_sysreg("cntvoff_el2", 0UL);
+
+	vcpu_init(&vcpus[0], FERMIOS_LOAD_IPA, 0, stage2_vttbr(), 0);
+
+	/* RW | VM | TSC (fermi-os uses PSCI SMC for its `reboot` command). No DC
+	 * (it runs its own higher-half MMU), no IMO (it drives the real GIC and
+	 * takes its own physical-timer IRQs at EL1). */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 19);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	uart_println("[M12] booting fermi-os as a guest at EL1. Its output follows:");
+	uart_println("------------------------------------------------------------");
+
+	for (;;) {
+		vcpu_run_once(&vcpus[0]);
+		if (vcpus[0].halted)
+			break;
+
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+		if (ec == EC_SMC64) {
+			psci_handle(&vcpus[0]);
+			vcpus[0].pc += 4;
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			uint64_t base = ipa & ~0x3FFFFFFFUL;
+			if (base < 0x8000000000UL) {
+				stage2_map_1gb(base);             /* fault-in reachable RAM/MMIO */
+			} else {
+				/* High MMIO (virtio BARs) we don't map; skip the access so the
+				 * guest's device probe fails gracefully instead of looping. */
+				vcpus[0].pc += 4;
+			}
+		} else {
+			uart_printf("\n[M12] fermi-os trap ec=%x (%s) far=%x elr=%x\n",
+			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			break;
+		}
+	}
+	uart_println("------------------------------------------------------------");
+	uart_println("[M12] fermi-os guest run ended.");
+}

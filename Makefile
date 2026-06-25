@@ -83,6 +83,15 @@ $(GUEST_DTB): $(GUEST_DIR)/guest.dts $(GUEST_INITRD)
 	 sed "s|stdout-path = \"/pl011@9000000\";|stdout-path = \"/pl011@9000000\";\n\t\tlinux,initrd-start = <$(INITRD_ADDR)>;\n\t\tlinux,initrd-end = <$$end>;|" \
 	     $(GUEST_DIR)/guest.dts > $(BUILD)/guest.full.dts; \
 	 dtc -I dts -O dtb $(BUILD)/guest.full.dts -o $@ 2>/dev/null
+# fermi-os guest image (optional): build from the scratch copy fermios-src if
+# present, else a placeholder so the hypervisor still builds standalone.
+FERMIOS_BIN := $(BUILD)/fermios.bin
+$(FERMIOS_BIN):
+	@mkdir -p $(BUILD)
+	@if [ -f fermios-src/build/kernel.bin ]; then cp fermios-src/build/kernel.bin $@; echo "FERMIOS $@ (from fermios-src)"; \
+	 elif [ -f fermios-src/Makefile ]; then $(MAKE) -C fermios-src >/dev/null 2>&1 && $(CROSS)objcopy -O binary fermios-src/build/kernel.elf $@ && echo "FERMIOS $@ (built fermios-src)"; \
+	 else printf '\0\0\0\0' > $@; echo "FERMIOS $@ (placeholder; no fermios-src)"; fi
+$(BUILD)/guest_fermios.o: $(FERMIOS_BIN)
 $(BUILD)/guest_dtb.o: $(GUEST_DTB)
 
 # A persistent ext4 disk for the guest's virtio-blk device. Built once (no

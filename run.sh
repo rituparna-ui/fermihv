@@ -76,6 +76,24 @@ case "$cmd" in
 		  rm -rf build/_li
 		  echo "staged:"; cat build/netmods/order.txt'
 		;;
+	fermios)
+		drun make all && drun make disk
+		echo "[run.sh] booting FermiHV + fermi-os guest (interactive; Ctrl-A X to quit)"
+		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
+			qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,addr=0x46000000,data=0x0FE33105,data-len=4
+		;;
+	fermios-raw)
+		drun make all
+		echo "[run.sh] booting FermiHV + fermi-os guest (captured)..."
+		drun bash -c 'timeout 30 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,addr=0x46000000,data=0x0FE33105,data-len=4 \
+			2>&1 || true'
+		;;
 	linux)
 		drun make all && drun make disk
 		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"
