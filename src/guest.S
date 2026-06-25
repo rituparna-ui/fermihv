@@ -647,3 +647,125 @@ guest_virtio_entry:
 	.balign 8
 vvmsg:
 	.asciz	"Hello from a guest, printed through an EMULATED virtio-console device!\n"
+
+/* ------------------------------------------------------------------ */
+/* M24 guest: interrupt-driven virtio-console. Enables the device IRQ   */
+/* (INTID 20) in its vGIC, queues a buffer + notifies, and services the  */
+/* completion interrupt the device raises through the vGIC.              */
+/* ------------------------------------------------------------------ */
+.global guest_virtio_irq_entry
+guest_virtio_irq_entry:
+	movz	x2, #0x0800, lsl #16
+	mov	w0, #0x12
+	str	w0, [x2]                 /* GICD_CTLR */
+	movz	x3, #0x080A, lsl #16
+	str	wzr, [x3, #0x14]         /* GICR_WAKER */
+	movz	x4, #0x080B, lsl #16
+	mov	w0, #0xFFFFFFFF
+	str	w0, [x4, #0x80]          /* IGROUPR0 */
+	mov	w0, #1
+	lsl	w0, w0, #20
+	str	w0, [x4, #0x100]         /* ISENABLER0: enable INTID 20 */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gvio_vectors
+	msr	vbar_el1, x0
+	isb
+	msr	daifclr, #2
+	movz	x10, #0x4002, lsl #16    /* queue page 0x40020000 */
+	adr	x11, gvio_msg
+	mov	x3, #0
+1:	ldrb	w0, [x11, x3]
+	cbz	w0, 2f
+	add	x3, x3, #1
+	b	1b
+2:	str	x11, [x10, #0]
+	str	w3, [x10, #8]
+	str	wzr, [x10, #12]
+	add	x4, x10, #16
+	strh	wzr, [x4, #0]
+	mov	w0, #1
+	strh	w0, [x4, #2]
+	strh	wzr, [x4, #4]
+	dsb	sy
+	movz	x5, #0x0A00, lsl #16
+	mov	w0, #4096
+	str	w0, [x5, #0x28]
+	str	wzr, [x5, #0x30]
+	mov	w0, #1
+	str	w0, [x5, #0x38]
+	mov	w0, #4096
+	str	w0, [x5, #0x3c]
+	movz	w0, #0x0004, lsl #16
+	movk	w0, #0x0020
+	str	w0, [x5, #0x40]
+	mov	w0, #0xF
+	str	w0, [x5, #0x70]
+	str	wzr, [x5, #0x50]         /* QueueNotify -> device emits + raises IRQ */
+3:	wfi
+	b	3b
+
+	.balign 2048
+gvio_vectors:
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_irq                 /* idx 5: Cur EL SPx IRQ */
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+	.balign 0x80
+	b	gvio_bad
+
+gvio_irq:
+	sub	sp, sp, #48
+	stp	x0, x1, [sp]
+	stp	x2, x3, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	mrs	x0, icc_iar1_el1         /* vINTID (20) */
+	movz	x2, #0x0A00, lsl #16
+	ldr	w1, [x2, #0x60]          /* virtio InterruptStatus */
+	str	w1, [x2, #0x64]          /* InterruptACK */
+	msr	icc_eoir1_el1, x0
+	mov	x1, x0                   /* report the INTID */
+	hvc	#0
+	ldp	x29, x30, [sp, #32]
+	ldp	x2, x3, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #48
+	eret
+
+gvio_bad:
+	b	.
+
+	.balign 8
+gvio_msg:
+	.asciz	"payload delivered to the guest's virtio-console queue\n"

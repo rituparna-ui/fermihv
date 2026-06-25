@@ -41,6 +41,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M21 | **Two real OSes, co-resident**: Linux + fermi-os concurrent, fully isolated |
 | M22 | **Guest-driven SMP**: a guest boots its secondary core via PSCI CPU_ON + IPI |
 | M23 | **Emulated virtio device**: guest prints via a virtio-console (virtqueue) |
+| M24 | **Interrupt-driven virtio**: used ring + completion IRQ via the vGIC |
 
 ## Architecture
 

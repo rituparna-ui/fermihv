@@ -1361,3 +1361,59 @@ void virtio_demo(void) {
 	uart_println("[M23] virtio-console: guest queued a buffer; the hypervisor's "
 	             "device model walked the virtqueue and emitted it.");
 }
+
+/* ------------------------------------------------------------------ */
+/* M24: interrupt-driven virtio-console (used ring + completion IRQ)   */
+/* ------------------------------------------------------------------ */
+
+void virtio_irq_demo(void) {
+	extern void guest_virtio_irq_entry(void);
+	stage2_init();
+	virtio_reset();
+	vgic_reset();
+	gic_init_el2();
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4); /* RW|VM|DC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], (uint64_t)&guest_virtio_irq_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+
+	uart_println("[M24] interrupt-driven virtio-console (used ring + completion IRQ):");
+	uart_puts("      device output> ");
+
+	int done = 0, guard = 0;
+	while (!done && guard++ < 100000) {
+		vcpu_run_once(&vcpus[0]);
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			uart_printf("\n[M24] guest serviced the virtio completion IRQ "
+			            "(INTID %u) delivered via the vGIC\n", vcpus[0].x[1]);
+			done = 1;
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (virtio_contains(ipa))
+				virtio_mmio(&vcpus[0], ipa);
+			else if (vgic_contains(ipa))
+				vgic_mmio(0, &vcpus[0], ipa);
+			else
+				mmio_zero(&vcpus[0]);
+		} else {
+			uart_printf("[M24] unexpected exit ec=%x (%s)\n", ec, ec_name(ec));
+			break;
+		}
+		/* device raised a completion IRQ -> inject it if the guest enabled it */
+		if (virtio_take_irq() && vgic_irq_enabled(0, 20))
+			vgic_inject(20);
+	}
+	uart_println("[M24] virtio-console is interrupt-driven end-to-end: the device "
+	             "wrote the used ring and signalled the guest through the vGIC.");
+}

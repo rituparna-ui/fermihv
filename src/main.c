@@ -85,6 +85,9 @@ void hv_main(void) {
 	/* M23: emulated virtio-console -- a guest prints through a virtqueue. */
 	virtio_demo();
 
+	/* M24: interrupt-driven virtio-console (used ring + completion IRQ). */
+	virtio_irq_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();
