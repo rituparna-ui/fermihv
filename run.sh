@@ -51,14 +51,36 @@ case "$cmd" in
 		  cp "$(find /tmp/bbx -path "*bin/busybox" -type f | head -1)" build/busybox; \
 		  chmod +x build/busybox; ls -la build/busybox'
 		;;
+	fetch-modules)
+		echo "[run.sh] staging virtio_net kernel modules -> build/netmods"
+		drun bash -c '
+		  set -e
+		  ver=6.12.86+deb13-arm64
+		  wget -q -O /tmp/li.deb "http://deb.debian.org/debian/pool/main/l/linux/linux-image-${ver}-unsigned_6.12.86-1_arm64.deb"
+		  rm -rf build/_li && mkdir -p build/_li && dpkg-deb -x /tmp/li.deb build/_li
+		  mkdir -p build/_li/lib && ln -sf "$(pwd)/build/_li/usr/lib/modules" build/_li/lib/modules
+		  depmod -b build/_li "$ver"
+		  rm -rf build/netmods && mkdir -p build/netmods; : > build/netmods/order.txt
+		  modprobe -d build/_li -S "$ver" --show-depends virtio_net | while read kind ko rest; do
+		    [ "$kind" = insmod ] || continue
+		    bn=$(basename "${ko%.xz}")
+		    case "$ko" in
+		      *.xz) python3 -c "import lzma,sys;open(sys.argv[2],\"wb\").write(lzma.open(sys.argv[1]).read())" "$ko" "build/netmods/$bn" ;;
+		      *) cp "$ko" "build/netmods/$bn" ;;
+		    esac
+		    echo "$bn" >> build/netmods/order.txt
+		  done
+		  rm -rf build/_li
+		  echo "staged:"; cat build/netmods/order.txt'
+		;;
 	linux)
 		drun make all
 		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"
 		# -it gives the guest's busybox shell a real terminal on the serial console.
 		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
 			qemu-system-aarch64 \
-			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on
@@ -68,8 +90,8 @@ case "$cmd" in
 		drun make all
 		printf 'uname -a\ncat /proc/cpuinfo | head -6\nls -la /\ncat /proc/interrupts\necho FERMIHV_SHELL_OK\npoweroff -f\n' | \
 		docker run --rm -i -v "$HERE":/work -w /work "$IMAGE" bash -c 'timeout 95 qemu-system-aarch64 \
-			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
@@ -79,8 +101,8 @@ case "$cmd" in
 		drun make all
 		echo "[run.sh] booting FermiHV + Linux guest (captured, ${LINUX_TIMEOUT:-95}s)..."
 		drun bash -c 'timeout 95 qemu-system-aarch64 \
-			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
@@ -90,8 +112,8 @@ case "$cmd" in
 		drun make all
 		echo "[run.sh] booting for 8s, capturing serial..."
 		drun bash -c 'timeout 8 qemu-system-aarch64 \
-			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 2G -nographic -nic none -kernel build/fermihv.elf 2>&1 || true'
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf 2>&1 || true'
 		;;
 	*) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac

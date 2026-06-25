@@ -56,7 +56,7 @@ $(GUEST_INIT): $(GUEST_DIR)/init.c
 $(GUEST_INITRD): $(GUEST_INIT) $(GUEST_DIR)/init.sh
 	@echo "INITRD $@"
 	@rm -rf $(BUILD)/initrd
-	@mkdir -p $(BUILD)/initrd/dev $(BUILD)/initrd/bin $(BUILD)/initrd/proc $(BUILD)/initrd/sys
+	@mkdir -p $(BUILD)/initrd/dev $(BUILD)/initrd/bin $(BUILD)/initrd/proc $(BUILD)/initrd/sys $(BUILD)/initrd/etc
 	@mknod $(BUILD)/initrd/dev/console c 5 1 2>/dev/null || true
 	@if [ -f $(BUILD)/busybox ]; then \
 		cp $(BUILD)/busybox $(BUILD)/initrd/bin/busybox; \
@@ -66,6 +66,12 @@ $(GUEST_INITRD): $(GUEST_INIT) $(GUEST_DIR)/init.sh
 	else \
 		cp $(GUEST_INIT) $(BUILD)/initrd/init; chmod +x $(BUILD)/initrd/init; \
 		echo "  (initramfs: static heartbeat init -- run ./run.sh fetch-busybox for a shell)"; \
+	fi
+	@if [ -d $(BUILD)/netmods ]; then \
+		mkdir -p $(BUILD)/initrd/lib/modules; \
+		cp $(BUILD)/netmods/*.ko $(BUILD)/initrd/lib/modules/ 2>/dev/null || true; \
+		cp $(BUILD)/netmods/order.txt $(BUILD)/initrd/lib/modules/ 2>/dev/null || true; \
+		echo "  (initramfs: bundled virtio_net modules for guest networking)"; \
 	fi
 	@cd $(BUILD)/initrd && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz
 
