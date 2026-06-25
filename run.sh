@@ -112,6 +112,24 @@ case "$cmd" in
 			-device loader,addr=0x46000000,data=0x0FE33106,data-len=4 \
 			2>&1 || true'
 		;;
+	mtenant-real)
+		drun make all
+		echo "[run.sh] fermi-os + a second VM as concurrent isolated tenants (interactive)"
+		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
+			qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 3G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,addr=0x46000000,data=0x0FE33107,data-len=4
+		;;
+	mtenant-real-raw)
+		drun make all
+		echo "[run.sh] fermi-os + a second VM as concurrent isolated tenants (captured)..."
+		drun bash -c 'timeout 60 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 3G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,addr=0x46000000,data=0x0FE33107,data-len=4 \
+			2>&1 || true'
+		;;
 	linux)
 		drun make all && drun make disk
 		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"

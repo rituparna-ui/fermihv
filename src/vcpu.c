@@ -822,11 +822,11 @@ void fermios_boot(void) {
 /* M17: fermi-os on the EMULATED vGIC (no GIC/UART passthrough)        */
 /* ------------------------------------------------------------------ */
 
-/* Emulated EL1 physical timer state (the guest's CNTP_* are trapped so its
- * timer never fires a real interrupt; we drive ticks from the EL2 CNTHP). */
-static uint64_t g_cntp_ctl, g_cntp_cval, g_cntp_tval;
+/* Emulated EL1 physical timer state, per VM (the guest's CNTP_* are trapped so
+ * its timer never fires a real interrupt; we drive ticks from the EL2 CNTHP). */
+static uint64_t g_cntp_ctl[2], g_cntp_cval[2], g_cntp_tval[2];
 
-static void cntp_emulate(vcpu_t *v) {
+static void cntp_emulate(int vm, vcpu_t *v) {
 	uint64_t iss = ESR_ISS(v->exit_esr);
 	int dir = iss & 1;                 /* 0 = write (MSR), 1 = read (MRS) */
 	int rt = (iss >> 5) & 0x1F;
@@ -835,12 +835,12 @@ static void cntp_emulate(vcpu_t *v) {
 	if (crn == 14 && crm == 2) {       /* CNTP_TVAL(op2=0)/CTL(1)/CVAL(2)_EL0 */
 		if (dir == 0) {
 			uint64_t val = (rt == 31) ? 0 : v->x[rt];
-			if (op2 == 1) g_cntp_ctl = val;
-			else if (op2 == 2) g_cntp_cval = val;
-			else g_cntp_tval = val;
+			if (op2 == 1) g_cntp_ctl[vm] = val;
+			else if (op2 == 2) g_cntp_cval[vm] = val;
+			else g_cntp_tval[vm] = val;
 		} else {
-			uint64_t val = (op2 == 1) ? g_cntp_ctl
-			             : (op2 == 2) ? g_cntp_cval : g_cntp_tval;
+			uint64_t val = (op2 == 1) ? g_cntp_ctl[vm]
+			             : (op2 == 2) ? g_cntp_cval[vm] : g_cntp_tval[vm];
 			if (rt != 31)
 				v->x[rt] = val;
 		}
@@ -909,7 +909,7 @@ void fermios_vgic_boot(void) {
 			else
 				stage2_map_1gb(ipa & ~0x3FFFFFFFUL);
 		} else if (ec == EC_SYSREG) {
-			cntp_emulate(&vcpus[0]);     /* emulated physical timer */
+			cntp_emulate(0, &vcpus[0]);     /* emulated physical timer */
 		} else if (ec == EC_SMC64) {
 			psci_handle(&vcpus[0]);
 			vcpus[0].pc += 4;
@@ -922,4 +922,108 @@ void fermios_vgic_boot(void) {
 	hyptimer_stop();
 	uart_println("------------------------------------------------------------");
 	uart_println("[M17] fermi-os-on-vGIC run ended.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M19: a REAL OS (fermi-os) as one of two concurrent isolated tenants */
+/* ------------------------------------------------------------------ */
+
+void mtenant_real_demo(void) {
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	extern char fermios_image_start[], fermios_image_end[];
+	extern char guest_tvgic_start[], guest_tvgic_end[];
+
+	/* VM0 = fermi-os (real OS) at host 0x80000000; VM1 = vGIC tenant at 0xC0000000. */
+	uint64_t fsz = (uint64_t)(fermios_image_end - fermios_image_start);
+	uint64_t tsz = (uint64_t)(guest_tvgic_end - guest_tvgic_start);
+	for (uint64_t i = 0; i < fsz; i++)
+		((volatile uint8_t *)0x80000000UL)[i] = ((uint8_t *)fermios_image_start)[i];
+	for (uint64_t i = 0; i < tsz; i++)
+		((volatile uint8_t *)0xC0000000UL)[i] = ((uint8_t *)guest_tvgic_start)[i];
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr0 = stage2_build_vm(0, 0x40000000UL, 0x80000000UL, 1);
+	uint64_t vttbr1 = stage2_build_vm(1, 0x40000000UL, 0xC0000000UL, 2);
+
+	/* Per-VM HCR_EL2: fermi-os runs its own MMU (no DC); the tenant is MMU-off
+	 * (DC). Both: RW|VM|IMO; fermi-os also TSC for its PSCI reboot. */
+	uint64_t hcr[2];
+	hcr[0] = (1UL << 31) | (1UL << 0) | (1UL << 4) | (1UL << 19);            /* RW|VM|IMO|TSC */
+	hcr[1] = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);            /* RW|VM|DC|IMO  */
+
+	/* Counter readable, physical timer trapped (fermi-os); ICV enabled. */
+	wr_sysreg("cnthctl_el2", 1UL);
+	wr_sysreg("cntvoff_el2", 0UL);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], 0x40000000UL, 0, vttbr0, 0);             /* fermi-os */
+	vcpu_init(&vcpus[1], 0x40000000UL, 0x40010000UL, vttbr1, 1); /* tenant   */
+
+	uart_println("[M19] TWO concurrent isolated tenants on per-VM vGICs:");
+	uart_println("      VM0 = fermi-os (real OS), VM1 = lightweight vGIC guest.");
+	uart_println("      fermi-os boots below, interleaved with VM1's timer service:");
+	uart_println("------------------------------------------------------------");
+
+	hyptimer_start(10);
+	int t1 = 0, pend[2] = {0, 0}, cur = 0, guard = 0, slot = 0;
+	const uint32_t intid[2] = {30, 27};   /* fermi-os timer PPI 30; tenant 27 */
+	while (t1 < 8 && guard++ < 2000000) {
+		wr_sysreg("hcr_el2", hcr[cur]);   /* per-VM HCR (DC differs) */
+		__asm__ volatile("isb");
+		if (pend[cur] && vgic_irq_enabled(cur, intid[cur])) {
+			vgic_inject(intid[cur]);
+			pend[cur] = 0;
+		}
+
+		vcpu_run_once(&vcpus[cur]);
+
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t id = iar & 0xFFFFFF;
+			if (id == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				pend[0] = pend[1] = 1;
+				slot++;                   /* 3 of every 4 slices to fermi-os */
+				cur = ((slot & 3) == 0) ? 1 : 0;
+			}
+			if (id < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(cur, &vcpus[cur], ipa);
+			else if (vuart_contains(ipa))
+				mmio_emulate(&vcpus[cur], ipa);   /* fermi-os console */
+			else
+				uart_printf("\n[M19] VM%d DABT ipa=%x\n", cur, ipa);
+		} else if (ec == EC_SYSREG) {
+			cntp_emulate(cur, &vcpus[cur]);       /* fermi-os physical timer */
+		} else if (ec == EC_HVC64) {
+			if (cur == 1) {
+				t1++;
+				uart_printf("\n[M19] >> VM1 (tenant) serviced its vGIC tick #%d "
+				            "while fermi-os runs concurrently <<\n", t1);
+			}
+		} else if (ec == EC_SMC64) {
+			psci_handle(&vcpus[cur]);
+			vcpus[cur].pc += 4;
+		} else {
+			uart_printf("\n[M19] VM%d exit ec=%x (%s)\n", cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_println("\n------------------------------------------------------------");
+	uart_printf("[M19] done: VM1 serviced %d ticks while VM0 (fermi-os) booted "
+	            "alongside it.\n", t1);
+	uart_println("[M19] a REAL OS and a second VM ran concurrently, each isolated "
+	             "(own stage-2 + own vGIC + own timer state).");
 }

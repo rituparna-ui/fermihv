@@ -36,6 +36,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M16 | **Multi-tenancy**: two isolated VMs (per-VM stage-2 + VMID), same IPA, distinct host RAM |
 | M17 | **Real kernel on the vGIC**: fermi-os boots on the emulated GIC (no passthrough) |
 | M18 | **Per-VM vGIC**: two isolated VMs, each on its own emulated GIC, concurrent + time-sliced |
+| M19 | **Real OS as a tenant**: fermi-os boots to its shell concurrently with a second isolated VM |
 
 ## Architecture
 
