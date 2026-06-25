@@ -1,19 +1,21 @@
 /*
  * EL2 exception vectors.
  *
- * The AArch64 vector table is 16 entries x 128 bytes, 2KiB-aligned, grouped:
- *   0x000  Current EL with SP_EL0   (sync, irq, fiq, serror)
- *   0x200  Current EL with SP_ELx   <- EL2 faults land here (we run on SP_EL2)
- *   0x400  Lower EL, AArch64        <- guest (EL1) traps land here  [M2+]
- *   0x600  Lower EL, AArch32        (unused)
+ * 16 entries x 128 bytes, 2KiB-aligned:
+ *   0x000  Current EL with SP_EL0   -> el2_common (hypervisor self-faults)
+ *   0x200  Current EL with SP_ELx   -> el2_common (e.g. the M1 BRK demo)
+ *   0x400  Lower EL, AArch64        -> __guest_exit (a guest trapped to us)
+ *   0x600  Lower EL, AArch32        -> el2_common (unused; we run A64 guests)
  *
- * Each stub allocates a trap frame, stashes x0/x1, records which vector
- * fired, and branches to el2_common, which saves the rest and calls the C
- * dispatcher. Frame layout MUST match struct el2_frame in exception.h.
+ * The guest-exit stubs free up x0/x1, fetch the current vcpu pointer from
+ * TPIDR_EL2 (set by __guest_enter), record which vector fired, and branch to
+ * the save path in world.S.
  */
+#include "vcpu_offsets.h"
 
 #define FRAME_SIZE 288   /* 31 GPRs (248) + elr/spsr/esr/far (32) -> 16-aligned */
 
+/* Hypervisor-self exception: build a trap frame and call the C dispatcher. */
 .macro VEC idx
 	.balign 0x80
 	sub	sp, sp, #FRAME_SIZE
@@ -22,26 +24,37 @@
 	b	el2_common
 .endm
 
+/* Guest exit: stash x0/x1, load vcpu*, record vector index, go save state. */
+.macro VEC_GUEST idx
+	.balign 0x80
+	sub	sp, sp, #16
+	stp	x0, x1, [sp]
+	mrs	x0, tpidr_el2
+	mov	x1, #\idx
+	str	x1, [x0, #VCPU_EXIT_REASON]
+	b	__guest_exit
+.endm
+
 .section .text.vectors
 .balign 2048
 .global el2_vector_table
 el2_vector_table:
-	VEC 0    /* Cur EL SP0   : sync   */
-	VEC 1    /* Cur EL SP0   : irq    */
-	VEC 2    /* Cur EL SP0   : fiq    */
-	VEC 3    /* Cur EL SP0   : serror */
-	VEC 4    /* Cur EL SPx   : sync   */
-	VEC 5    /* Cur EL SPx   : irq    */
-	VEC 6    /* Cur EL SPx   : fiq    */
-	VEC 7    /* Cur EL SPx   : serror */
-	VEC 8    /* Lower aarch64: sync   */
-	VEC 9    /* Lower aarch64: irq    */
-	VEC 10   /* Lower aarch64: fiq    */
-	VEC 11   /* Lower aarch64: serror */
-	VEC 12   /* Lower aarch32: sync   */
-	VEC 13   /* Lower aarch32: irq    */
-	VEC 14   /* Lower aarch32: fiq    */
-	VEC 15   /* Lower aarch32: serror */
+	VEC 0          /* Cur EL SP0   : sync   */
+	VEC 1          /* Cur EL SP0   : irq    */
+	VEC 2          /* Cur EL SP0   : fiq    */
+	VEC 3          /* Cur EL SP0   : serror */
+	VEC 4          /* Cur EL SPx   : sync   */
+	VEC 5          /* Cur EL SPx   : irq    */
+	VEC 6          /* Cur EL SPx   : fiq    */
+	VEC 7          /* Cur EL SPx   : serror */
+	VEC_GUEST 8    /* Lower aarch64: sync   */
+	VEC_GUEST 9    /* Lower aarch64: irq    */
+	VEC_GUEST 10   /* Lower aarch64: fiq    */
+	VEC_GUEST 11   /* Lower aarch64: serror */
+	VEC 12         /* Lower aarch32: sync   */
+	VEC 13         /* Lower aarch32: irq    */
+	VEC 14         /* Lower aarch32: fiq    */
+	VEC 15         /* Lower aarch32: serror */
 
 .section .text
 .global el2_common
@@ -72,11 +85,9 @@ el2_common:
 	mrs	x1, far_el2
 	str	x1, [sp, #272]
 
-	/* el2_exception_dispatch(vector_index, frame*) */
 	mov	x1, sp
 	bl	el2_exception_dispatch
 
-	/* Restore (dispatcher may have advanced frame->elr for recovery). */
 	ldr	x1, [sp, #248]
 	msr	elr_el2, x1
 	ldr	x1, [sp, #256]

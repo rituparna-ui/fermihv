@@ -12,4 +12,8 @@ void stage2_init(void);
  * blocks on demand from the data/instruction abort handler. */
 void stage2_map_1gb(uint64_t ipa);
 
+/* Base address of the stage-2 level-1 table, for loading into VTTBR_EL2
+ * (VMID 0). */
+uint64_t stage2_vttbr(void);
+
 #endif /* FERMIHV_STAGE2_H */

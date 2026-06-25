@@ -49,9 +49,12 @@ void stage2_init(void) {
 	stage2_map_1gb(0x40000000UL);
 
 	__asm__ volatile("msr vtcr_el2,  %0" ::"r"(VTCR_EL2_VALUE));
-	__asm__ volatile("msr vttbr_el2, %0" ::"r"((uint64_t)s2_l1)); /* VMID 0 */
 	__asm__ volatile("isb");
 
 	uart_printf("[M3] stage-2 ON: vtcr=%x vttbr=%x (mapped 1GiB @0x40000000)\n",
 	            VTCR_EL2_VALUE, (uint64_t)s2_l1);
+}
+
+uint64_t stage2_vttbr(void) {
+	return (uint64_t)s2_l1; /* VMID 0 in bits[63:48] */
 }
