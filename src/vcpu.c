@@ -3,9 +3,12 @@
 #include "stage2.h"
 #include "exception.h"
 #include "vdev.h"
+#include "gic.h"
+#include "timer.h"
 
 extern void guest_counter_entry(void);
 extern void guest_vuart_entry(void);
+extern void guest_virq_entry(void);
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -151,4 +154,66 @@ void sched_demo(void) {
 	run_vcpus(1, 1, "M5");
 
 	uart_println("[SCHED] all vCPUs halted; demo done.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M6b: virtual timer interrupts delivered to a guest                  */
+/* ------------------------------------------------------------------ */
+
+#define VTIMER_VINTID 27   /* the vINTID the guest will see */
+
+/* Inject a pending Group-1 virtual interrupt into list register 0.
+ * ICH_LR<n>_EL2: [63:62]=State(01=pending), [61]=HW(0=SW), [60]=Group(1),
+ * [55:48]=priority, [31:0]=vINTID. */
+static void vgic_inject(uint32_t vintid) {
+	uint64_t lr = (1ULL << 62) | (1ULL << 60) | (uint64_t)vintid;
+	__asm__ volatile("msr ich_lr0_el2, %0" ::"r"(lr));
+	__asm__ volatile("isb");
+}
+
+void virq_demo(int nticks) {
+	uint64_t vttbr = stage2_vttbr();
+	vcpu_init(&vcpus[0], (uint64_t)&guest_virq_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), vttbr, 0);
+
+	/* HCR_EL2: RW | VM | DC | IMO (route physical IRQ to EL2). */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	/* Enable the virtual CPU interface (list-register processing). */
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	hyptimer_start(100); /* 100 ms physical tick at EL2 */
+
+	uart_println("[M6b] injecting virtual timer ticks into the guest:");
+	int ticks = 0;
+	while (ticks < nticks) {
+		vcpu_run_once(&vcpus[0]);
+
+		if ((vcpus[0].exit_reason & 3) == 1) {
+			/* Physical timer IRQ preempted the guest to EL2. Handle it and
+			 * inject a virtual interrupt, then re-enter so the guest takes
+			 * it through its own EL1 IRQ vector. */
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				vgic_inject(VTIMER_VINTID);
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ESR_EC(vcpus[0].exit_esr) == EC_HVC64) {
+			ticks++;
+			uart_printf("[M6b] guest handled virtual tick #%u "
+			            "(guest's own counter x0=%u)\n",
+			            ticks, vcpus[0].x[0]);
+		} else {
+			uart_printf("[M6b] unexpected exit reason=%u esr=%x, stopping\n",
+			            vcpus[0].exit_reason, vcpus[0].exit_esr);
+			break;
+		}
+	}
+
+	hyptimer_stop();
+	uart_printf("[M6b] delivered %u virtual timer ticks to the guest.\n", ticks);
 }

@@ -38,3 +38,82 @@ guest_vuart_entry:
 	.balign 4
 vmsg:
 	.asciz	"Hello from the guest via an emulated UART (MMIO trap-and-emulate)!\n"
+
+/* ------------------------------------------------------------------ */
+/* M6b guest: receives virtual timer interrupts.                       */
+/* ------------------------------------------------------------------ */
+.global guest_virq_entry
+guest_virq_entry:
+	/* Enable this VM's (virtual) GICv3 CPU interface. Under HCR_EL2.IMO=1
+	 * and ICH_HCR_EL2.En=1 these ICC_* writes are redirected to the
+	 * virtual interface (ICV_*) by hardware. */
+	mov	x0, #1
+	msr	icc_sre_el1, x0          /* SRE = 1 */
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0          /* accept all priorities */
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0      /* enable Group 1 (sets VENG1) */
+
+	/* Install the guest's EL1 vector table. */
+	adr	x0, guest_el1_vectors
+	msr	vbar_el1, x0
+	isb
+
+	mov	x21, #0                  /* virtual-tick counter (callee-saved) */
+	msr	daifclr, #2              /* now safe to take IRQs */
+1:
+	wfi
+	b	1b
+
+	.balign 2048
+guest_el1_vectors:
+	.balign 0x80
+	b	guest_unhandled          /* 0  Cur EL SP0 sync   */
+	.balign 0x80
+	b	guest_unhandled          /* 1  irq    */
+	.balign 0x80
+	b	guest_unhandled          /* 2  fiq    */
+	.balign 0x80
+	b	guest_unhandled          /* 3  serror */
+	.balign 0x80
+	b	guest_unhandled          /* 4  Cur EL SPx sync */
+	.balign 0x80
+	b	guest_irq                /* 5  Cur EL SPx irq  <- virtual timer */
+	.balign 0x80
+	b	guest_unhandled          /* 6  fiq    */
+	.balign 0x80
+	b	guest_unhandled          /* 7  serror */
+	.balign 0x80
+	b	guest_unhandled          /* 8  lower a64 sync */
+	.balign 0x80
+	b	guest_unhandled          /* 9  irq    */
+	.balign 0x80
+	b	guest_unhandled          /* 10 fiq    */
+	.balign 0x80
+	b	guest_unhandled          /* 11 serror */
+	.balign 0x80
+	b	guest_unhandled          /* 12 lower a32 sync */
+	.balign 0x80
+	b	guest_unhandled          /* 13 irq    */
+	.balign 0x80
+	b	guest_unhandled          /* 14 fiq    */
+	.balign 0x80
+	b	guest_unhandled          /* 15 serror */
+
+guest_irq:
+	sub	sp, sp, #32
+	stp	x0, x1, [sp]
+	stp	x29, x30, [sp, #16]
+	mrs	x0, icc_iar1_el1         /* virtual ack -> vINTID */
+	add	x21, x21, #1
+	msr	icc_eoir1_el1, x0        /* virtual EOI */
+	mov	x0, x21
+	hvc	#0                       /* report tick count to the hypervisor */
+	ldp	x29, x30, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #32
+	eret
+
+guest_unhandled:
+	b	.

@@ -60,4 +60,7 @@ void vcpu_run_once(vcpu_t *v);
 /* M4 demo: run two vCPUs round-robin and show independent preserved state. */
 void sched_demo(void);
 
+/* M6b demo: deliver `nticks` virtual timer interrupts to a guest. */
+void virq_demo(int nticks);
+
 #endif /* FERMIHV_VCPU_H */

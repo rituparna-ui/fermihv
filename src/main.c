@@ -61,5 +61,8 @@ void hv_main(void) {
 	uart_printf("[M6a] received %u EL2 timer ticks; IRQ plumbing works.\n",
 	            hyptimer_ticks());
 
+	/* M6b: deliver those ticks into the guest as virtual interrupts. */
+	virq_demo(5);
+
 	uart_println("[HV] Done. Parking CPU.");
 }
