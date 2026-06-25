@@ -93,6 +93,9 @@ void linux_vgic_boot(void);
 /* M21: Linux + fermi-os as two concurrent isolated co-tenants. */
 void mtenant_os_demo(void);
 
+/* M22 demo: guest-driven SMP -- a guest boots its secondary via PSCI CPU_ON. */
+void smp_psci_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

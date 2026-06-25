@@ -498,3 +498,103 @@ tvgic_irq:
 tvgic_bad:
 	b	.
 guest_tvgic_end:
+
+/* ------------------------------------------------------------------ */
+/* M22 guest: guest-driven SMP. The primary (vCPU0) brings up the       */
+/* secondary (vCPU1) via PSCI CPU_ON (HVC); the secondary then sends an  */
+/* SGI back to the primary, which receives it on its CPU interface.      */
+/* ------------------------------------------------------------------ */
+.global guest_psci_smp_entry
+guest_psci_smp_entry:                    /* primary vCPU0 */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gpsci_vectors
+	msr	vbar_el1, x0
+	isb
+	msr	daifclr, #2
+
+	/* PSCI CPU_ON(target=1, entry=gpsci_secondary, ctx=0xCAFE) via HVC */
+	movz	x0, #0xC400, lsl #16
+	movk	x0, #0x0003              /* 0xC4000003 = CPU_ON */
+	mov	x1, #1                   /* target CPU 1 */
+	adr	x2, gpsci_secondary      /* secondary entry (guest IPA) */
+	movz	x3, #0xCAFE              /* context id */
+	hvc	#0
+1:
+	wfi
+	b	1b
+
+gpsci_secondary:                         /* secondary vCPU1, x0 = context id */
+	mov	x19, x0
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	/* send SGI INTID 3 to all-but-self (-> the primary) */
+	mov	x0, #3
+	lsl	x0, x0, #24
+	mov	x1, #1
+	lsl	x1, x1, #40
+	orr	x0, x0, x1
+	msr	icc_sgi1r_el1, x0
+2:
+	wfi
+	b	2b
+
+	.balign 2048
+gpsci_vectors:
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_irq                /* idx 5: Cur EL SPx IRQ (primary) */
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+	.balign 0x80
+	b	gpsci_bad
+
+gpsci_irq:
+	sub	sp, sp, #32
+	stp	x0, x1, [sp]
+	stp	x29, x30, [sp, #16]
+	mrs	x0, icc_iar1_el1
+	msr	icc_eoir1_el1, x0
+	hvc	#0                       /* report received INTID (x0) */
+	ldp	x29, x30, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #32
+	eret
+
+gpsci_bad:
+	b	.

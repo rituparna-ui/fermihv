@@ -645,6 +645,10 @@ void real_guest_demo(void) {
 #define LINUX_LOAD_IPA 0x41000000UL   /* 2 MiB-aligned kernel load address */
 #define LINUX_DTB_IPA  0x48000000UL   /* device tree blob                  */
 
+/* Set by PSCI CPU_ON for the SMP scheduler to bring up a secondary vCPU. */
+static volatile int psci_on_pending;
+static uint64_t psci_on_entry, psci_on_ctx;
+
 /* Minimal PSCI (SMC/HVC conduit) so Linux's CPU/power calls don't fault. */
 static void psci_handle(vcpu_t *v) {
 	uint32_t fn = (uint32_t)v->x[0];
@@ -660,9 +664,12 @@ static void psci_handle(vcpu_t *v) {
 		uart_println("[PSCI] SYSTEM_RESET -> halting guest");
 		v->halted = 1;
 		break;
-	case 0xC4000003:                 /* CPU_ON (64-bit): single vCPU only */
-	case 0x84000003:
-		v->x[0] = (uint64_t)-2;      /* INVALID_PARAMETERS */
+	case 0xC4000003:                 /* CPU_ON (64-bit) */
+	case 0x84000003:                 /* CPU_ON (32-bit) */
+		psci_on_entry = v->x[2];     /* secondary entry point */
+		psci_on_ctx = v->x[3];       /* context id (-> x0) */
+		psci_on_pending = 1;
+		v->x[0] = 0;                 /* SUCCESS */
 		break;
 	default:
 		v->x[0] = (uint64_t)-1;      /* NOT_SUPPORTED */
@@ -1221,4 +1228,88 @@ void mtenant_os_demo(void) {
 	}
 	uart_println("\n------------------------------------------------------------");
 	uart_println("[M21] Linux and fermi-os ran concurrently, fully isolated.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M22: guest-driven SMP -- a guest boots its secondary core via PSCI   */
+/* ------------------------------------------------------------------ */
+
+void smp_psci_demo(void) {
+	extern void guest_psci_smp_entry(void);
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4); /* RW|VM|DC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"((1UL << 0) | (1UL << 8))); /* En|TC */
+	__asm__ volatile("isb");
+
+	psci_on_pending = 0;
+	vcpu_init(&vcpus[0], (uint64_t)&guest_psci_smp_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+
+	uart_println("[M22] guest-driven SMP: vCPU0 boots vCPU1 via PSCI CPU_ON,");
+	uart_println("      then the secondary IPIs the primary back.");
+
+	hyptimer_start(10);
+	int cur = 0, sec_on = 0, got = 0, guard = 0;
+	while (!got && guard++ < 100000) {
+		if (psci_on_pending && !sec_on) {
+			vcpu_init(&vcpus[1], psci_on_entry,
+			          (uint64_t)(gstack[1] + sizeof(gstack[1])), stage2_vttbr(), 1);
+			vcpus[1].x[0] = psci_on_ctx;
+			sec_on = 1;
+			psci_on_pending = 0;
+			uart_printf("[M22] PSCI CPU_ON honored: secondary vCPU1 created at "
+			            "entry=%x ctx=%x\n", psci_on_entry, vcpus[1].x[0]);
+		}
+
+		int s = vgic_pop_sgi(cur);
+		if (s >= 0)
+			vgic_inject((uint32_t)s);
+
+		vcpu_run_once(&vcpus[cur]);
+
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t id = iar & 0xFFFFFF;
+			if (id == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				if (sec_on)
+					cur ^= 1;        /* round-robin once the secondary is up */
+			}
+			if (id < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			uint32_t fn = (uint32_t)vcpus[cur].x[0];
+			if ((fn & 0xFFFF0000) == 0xC4000000 ||
+			    (fn & 0xFFFF0000) == 0x84000000) {
+				psci_handle(&vcpus[cur]);     /* a PSCI call (CPU_ON, ...) */
+			} else {
+				uart_printf("[M22] primary vCPU0 RECEIVED IPI (SGI INTID %u) "
+				            "from the secondary core it booted!\n",
+				            vcpus[cur].x[0]);
+				got = 1;
+			}
+		} else if (ec == EC_SYSREG) {
+			uint64_t iss = ESR_ISS(vcpus[cur].exit_esr);
+			int rt = (iss >> 5) & 0x1F;
+			uint64_t val = (rt == 31) ? 0 : vcpus[cur].x[rt];
+			uint32_t intid = (val >> 24) & 0xF;
+			vgic_post_sgi(cur, intid);
+			vcpus[cur].pc += 4;
+			uart_printf("[M22] secondary vCPU1 issued SGI %u to the primary\n", intid);
+		} else {
+			uart_printf("[M22] vCPU%d exit ec=%x (%s)\n", cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_println(got ? "[M22] guest-driven SMP works: primary booted a secondary "
+	                   "core via PSCI and they exchanged an IPI."
+	                 : "[M22] secondary bring-up/IPI not observed.");
 }

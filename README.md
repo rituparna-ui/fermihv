@@ -39,6 +39,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M19 | **Real OS as a tenant**: fermi-os boots to its shell concurrently with a second isolated VM |
 | M20 | **Linux on the emulated vGIC**: boots to userspace with no device passthrough |
 | M21 | **Two real OSes, co-resident**: Linux + fermi-os concurrent, fully isolated |
+| M22 | **Guest-driven SMP**: a guest boots its secondary core via PSCI CPU_ON + IPI |
 
 ## Architecture
 

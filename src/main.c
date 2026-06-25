@@ -79,6 +79,9 @@ void hv_main(void) {
 	/* M18: per-VM vGIC -- two isolated VMs each on its own emulated GIC. */
 	mtenant_vgic_demo();
 
+	/* M22: guest-driven SMP -- a guest boots its secondary core via PSCI. */
+	smp_psci_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();
