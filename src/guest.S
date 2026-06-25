@@ -769,3 +769,156 @@ gvio_bad:
 	.balign 8
 gvio_msg:
 	.asciz	"payload delivered to the guest's virtio-console queue\n"
+
+/* ------------------------------------------------------------------ */
+/* M25 guest: virtio-blk. Writes sector 0 via a header/data/status      */
+/* descriptor chain, then services the completion IRQ (INTID 21).        */
+/* ------------------------------------------------------------------ */
+.balign 4
+.global guest_vblk_entry
+guest_vblk_entry:
+	movz	x2, #0x0800, lsl #16
+	mov	w0, #0x12
+	str	w0, [x2]                 /* GICD_CTLR */
+	movz	x3, #0x080A, lsl #16
+	str	wzr, [x3, #0x14]         /* GICR_WAKER */
+	movz	x4, #0x080B, lsl #16
+	mov	w0, #0xFFFFFFFF
+	str	w0, [x4, #0x80]
+	mov	w0, #1
+	lsl	w0, w0, #21
+	str	w0, [x4, #0x100]         /* enable INTID 21 */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gvblk_vectors
+	msr	vbar_el1, x0
+	isb
+	msr	daifclr, #2
+
+	/* request header @ 0x40021000: type=1 (write), reserved=0, sector=0 */
+	movz	x6, #0x4002, lsl #16
+	add	x6, x6, #0x1000
+	mov	w0, #1
+	str	w0, [x6, #0]
+	str	wzr, [x6, #4]
+	str	xzr, [x6, #8]
+	/* message + strlen -> x3 */
+	adr	x11, gvblk_msg
+	mov	x3, #0
+1:	ldrb	w0, [x11, x3]
+	cbz	w0, 2f
+	add	x3, x3, #1
+	b	1b
+2:	/* descriptor table @ 0x40020000 (16 bytes/entry) */
+	movz	x10, #0x4002, lsl #16
+	/* desc[0] header: addr, len=16, flags=NEXT(1) next=1 */
+	str	x6, [x10, #0]
+	mov	w0, #16
+	str	w0, [x10, #8]
+	movz	w0, #0x0001
+	movk	w0, #0x0001, lsl #16
+	str	w0, [x10, #12]
+	/* desc[1] data: addr=msg, len=x3, flags=NEXT(1) next=2 */
+	str	x11, [x10, #16]
+	str	w3, [x10, #24]
+	movz	w0, #0x0001
+	movk	w0, #0x0002, lsl #16
+	str	w0, [x10, #28]
+	/* desc[2] status: addr=0x40021100, len=1, flags=WRITE(2) next=0 */
+	add	x7, x6, #0x100
+	str	x7, [x10, #32]
+	mov	w0, #1
+	str	w0, [x10, #40]
+	mov	w0, #2
+	str	w0, [x10, #44]
+	/* avail ring @ +64 (QueueNum=4): flags=0, idx=1, ring[0]=0 */
+	add	x4, x10, #64
+	strh	wzr, [x4, #0]
+	mov	w0, #1
+	strh	w0, [x4, #2]
+	strh	wzr, [x4, #4]
+	dsb	sy
+	/* virtio-blk mmio @ 0x0A000200 */
+	movz	x5, #0x0A00, lsl #16
+	add	x5, x5, #0x200
+	mov	w0, #4096
+	str	w0, [x5, #0x28]
+	str	wzr, [x5, #0x30]
+	mov	w0, #4
+	str	w0, [x5, #0x38]
+	mov	w0, #4096
+	str	w0, [x5, #0x3c]
+	movz	w0, #0x0004, lsl #16
+	movk	w0, #0x0020
+	str	w0, [x5, #0x40]
+	mov	w0, #0xF
+	str	w0, [x5, #0x70]
+	str	wzr, [x5, #0x50]         /* QueueNotify -> device writes the disk + IRQ */
+3:	wfi
+	b	3b
+
+	.balign 2048
+gvblk_vectors:
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_irq
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+	.balign 0x80
+	b	gvblk_bad
+
+gvblk_irq:
+	sub	sp, sp, #48
+	stp	x0, x1, [sp]
+	stp	x2, x3, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	mrs	x0, icc_iar1_el1
+	movz	x2, #0x0A00, lsl #16
+	add	x2, x2, #0x200
+	ldr	w1, [x2, #0x60]
+	str	w1, [x2, #0x64]
+	msr	icc_eoir1_el1, x0
+	mov	x1, x0
+	hvc	#0
+	ldp	x29, x30, [sp, #32]
+	ldp	x2, x3, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #48
+	eret
+
+gvblk_bad:
+	b	.
+
+	.balign 8
+gvblk_msg:
+	.asciz	"FermiHV-virtio-blk-sector0!"

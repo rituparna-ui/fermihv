@@ -121,3 +121,131 @@ void virtio_mmio(vcpu_t *v, uint64_t ipa) {
 	}
 	v->pc += 4;
 }
+
+/* ================================================================== */
+/* virtio-blk: a second device type -- block read/write over a backing  */
+/* RAM disk, using the standard header/data/status descriptor chain.    */
+/* ================================================================== */
+#define VBLK_BASE 0x0A000200UL
+#define VBLK_SIZE 0x0200UL
+#define VBLK_SECTORS 16
+#define VBLK_SECSZ   512
+
+static uint8_t vblk_disk[VBLK_SECTORS * VBLK_SECSZ];
+static uint32_t b_status, b_page_size = 4096, b_queue_num, b_queue_pfn;
+static uint16_t b_last_avail;
+static uint32_t b_int_status;
+static int b_irq;
+
+int vblk_contains(uint64_t ipa) {
+	return ipa >= VBLK_BASE && ipa < VBLK_BASE + VBLK_SIZE;
+}
+
+void vblk_reset(void) {
+	b_status = 0; b_page_size = 4096; b_queue_num = 0; b_queue_pfn = 0;
+	b_last_avail = 0; b_int_status = 0; b_irq = 0;
+	for (unsigned i = 0; i < sizeof(vblk_disk); i++)
+		vblk_disk[i] = 0;
+}
+
+int vblk_take_irq(void) {
+	if (b_irq) { b_irq = 0; return 1; }
+	return 0;
+}
+
+/* Read the first `n` bytes of sector 0 into `out` (hypervisor god's-eye view). */
+void vblk_peek(char *out, int n) {
+	for (int i = 0; i < n; i++)
+		out[i] = (char)vblk_disk[i];
+}
+
+static void vblk_process(void) {
+	if (!b_queue_pfn || !b_queue_num)
+		return;
+	uint64_t base = (uint64_t)b_queue_pfn * b_page_size;
+	uint64_t avail = base + (uint64_t)b_queue_num * 16;
+	uint64_t used = (avail + 6 + 2 * (uint64_t)b_queue_num + 4095) & ~4095ULL;
+	uint16_t avail_idx = *(volatile uint16_t *)(avail + 2);
+
+	while (b_last_avail != avail_idx) {
+		uint16_t head = *(volatile uint16_t *)(avail + 4 +
+		                 2 * (b_last_avail % b_queue_num));
+		/* desc[head] = request header (type, _, sector) */
+		uint64_t hd = base + (uint64_t)head * 16;
+		uint64_t haddr = *(volatile uint64_t *)(hd + 0);
+		uint16_t hnext = *(volatile uint16_t *)(hd + 14);
+		uint32_t type = *(volatile uint32_t *)(haddr + 0);
+		uint64_t sector = *(volatile uint64_t *)(haddr + 8);
+		/* desc[hnext] = data buffer */
+		uint64_t dd = base + (uint64_t)hnext * 16;
+		uint64_t daddr = *(volatile uint64_t *)(dd + 0);
+		uint32_t dlen = *(volatile uint32_t *)(dd + 8);
+		uint16_t dnext = *(volatile uint16_t *)(dd + 14);
+		/* desc[dnext] = status byte */
+		uint64_t sd = base + (uint64_t)dnext * 16;
+		uint64_t saddr = *(volatile uint64_t *)(sd + 0);
+
+		uint8_t st = 0; /* OK */
+		uint64_t off = sector * VBLK_SECSZ;
+		if (off + dlen <= sizeof(vblk_disk)) {
+			if (type == 1) { /* VIRTIO_BLK_T_OUT (write) */
+				for (uint32_t i = 0; i < dlen; i++)
+					vblk_disk[off + i] = *(volatile uint8_t *)(daddr + i);
+			} else {         /* VIRTIO_BLK_T_IN (read) */
+				for (uint32_t i = 0; i < dlen; i++)
+					*(volatile uint8_t *)(daddr + i) = vblk_disk[off + i];
+			}
+		} else {
+			st = 1; /* IOERR */
+		}
+		*(volatile uint8_t *)saddr = st;
+
+		uint16_t uidx = *(volatile uint16_t *)(used + 2);
+		uint64_t ue = used + 4 + 8 * (uidx % b_queue_num);
+		*(volatile uint32_t *)(ue + 0) = head;
+		*(volatile uint32_t *)(ue + 4) = dlen;
+		*(volatile uint16_t *)(used + 2) = uidx + 1;
+		b_last_avail++;
+		b_int_status |= 1;
+		b_irq = 1;
+	}
+}
+
+void vblk_mmio(vcpu_t *v, uint64_t ipa) {
+	uint64_t iss = ESR_ISS(v->exit_esr);
+	if (!((iss >> 24) & 1)) { v->pc += 4; return; }
+	int wnr = (iss >> 6) & 1;
+	int srt = (iss >> 16) & 0x1F;
+	uint64_t off = ipa - VBLK_BASE;
+	if (wnr) {
+		uint32_t val = (srt == 31) ? 0 : (uint32_t)v->x[srt];
+		switch (off) {
+		case 0x028: b_page_size = val; break;
+		case 0x038: b_queue_num = val; break;
+		case 0x040: b_queue_pfn = val; break;
+		case 0x070: b_status = val; break;
+		case 0x064: b_int_status &= ~val; break;
+		case 0x050: vblk_process(); break;
+		default: break;
+		}
+	} else {
+		uint32_t val = 0;
+		switch (off) {
+		case 0x000: val = 0x74726976; break;
+		case 0x004: val = 1; break;
+		case 0x008: val = 2; break;                 /* DeviceID: block */
+		case 0x00c: val = 0x554d4551; break;
+		case 0x010: val = 0; break;
+		case 0x034: val = 8; break;
+		case 0x040: val = b_queue_pfn; break;
+		case 0x060: val = b_int_status; break;
+		case 0x070: val = b_status; break;
+		case 0x100: val = VBLK_SECTORS; break;       /* config: capacity (lo) */
+		case 0x104: val = 0; break;                  /* capacity (hi) */
+		default: val = 0; break;
+		}
+		if (srt != 31)
+			v->x[srt] = val;
+	}
+	v->pc += 4;
+}

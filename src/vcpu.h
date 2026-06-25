@@ -110,6 +110,9 @@ void virtio_demo(void);
 /* M24 demo: interrupt-driven virtio-console (used ring + completion IRQ). */
 void virtio_irq_demo(void);
 
+/* M25 demo: virtio-blk -- a guest writes a sector through a request chain. */
+void vblk_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

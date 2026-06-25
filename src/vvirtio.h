@@ -18,4 +18,12 @@ void virtio_mmio(vcpu_t *v, uint64_t ipa);
 /* Returns 1 (once) if the device raised a completion interrupt. */
 int virtio_take_irq(void);
 
+/* --- virtio-blk (block device over a backing RAM disk) --- */
+#define VBLK_BASE 0x0A000200UL
+int vblk_contains(uint64_t ipa);
+void vblk_reset(void);
+void vblk_mmio(vcpu_t *v, uint64_t ipa);
+int vblk_take_irq(void);
+void vblk_peek(char *out, int n);   /* hypervisor's view of disk sector 0 */
+
 #endif /* FERMIHV_VVIRTIO_H */

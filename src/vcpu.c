@@ -1417,3 +1417,64 @@ void virtio_irq_demo(void) {
 	uart_println("[M24] virtio-console is interrupt-driven end-to-end: the device "
 	             "wrote the used ring and signalled the guest through the vGIC.");
 }
+
+/* ------------------------------------------------------------------ */
+/* M25: virtio-blk -- a guest writes a sector through a request chain   */
+/* ------------------------------------------------------------------ */
+
+void vblk_demo(void) {
+	extern void guest_vblk_entry(void);
+	stage2_init();
+	vblk_reset();
+	vgic_reset();
+	gic_init_el2();
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4); /* RW|VM|DC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], (uint64_t)&guest_vblk_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+
+	uart_println("[M25] guest writes sector 0 via a virtio-blk request chain "
+	             "(header/data/status):");
+
+	int done = 0, guard = 0;
+	while (!done && guard++ < 100000) {
+		vcpu_run_once(&vcpus[0]);
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			done = 1;
+			uart_printf("[M25] guest serviced the virtio-blk completion IRQ "
+			            "(INTID %u)\n", vcpus[0].x[1]);
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (vblk_contains(ipa))
+				vblk_mmio(&vcpus[0], ipa);
+			else if (vgic_contains(ipa))
+				vgic_mmio(0, &vcpus[0], ipa);
+			else
+				mmio_zero(&vcpus[0]);
+		} else {
+			uart_printf("[M25] unexpected exit ec=%x (%s) far=%x elr=%x\n",
+			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			break;
+		}
+		if (vblk_take_irq() && vgic_irq_enabled(0, 21))
+			vgic_inject(21);
+	}
+
+	char buf[40];
+	vblk_peek(buf, 32);
+	buf[32] = 0;
+	uart_printf("[M25] hypervisor reads virtio-blk disk sector 0 = \"%s\"\n", buf);
+	uart_println("[M25] virtio-blk works: guest request chain -> device -> backing "
+	             "disk, with a completion IRQ.");
+}
