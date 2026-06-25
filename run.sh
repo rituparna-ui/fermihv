@@ -130,6 +130,17 @@ case "$cmd" in
 			-device loader,addr=0x46000000,data=0x0FE33107,data-len=4 \
 			2>&1 || true'
 		;;
+	linux-vgic-raw)
+		drun make all
+		echo "[run.sh] booting Linux on the EMULATED vGIC (captured)..."
+		drun bash -c 'timeout 90 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 3G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
+			-device loader,addr=0x46000000,data=0x0FE33108,data-len=4 \
+			2>&1 || true'
+		;;
 	linux)
 		drun make all && drun make disk
 		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"

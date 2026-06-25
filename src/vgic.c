@@ -41,7 +41,8 @@ static uint32_t reg_read(int vm, uint64_t ipa) {
 		uint64_t off = ipa - VGIC_GICR_BASE;
 		switch (off) {
 		case 0x0014: return 0;            /* GICR_WAKER: awake */
-		case 0x0008: return 1u << 4;      /* GICR_TYPER lo: Last redistributor */
+		case 0x0008: return 1u << 4;      /* GICR_TYPER lo: Last; PLPIS=0 */
+		case 0xFFE8: return 0x30;         /* GICR_PIDR2: GICv3 (ArchRev=3) */
 		case GICR_SGI_OFF + 0x0080: return vg[vm].group;    /* IGROUPR0   */
 		case GICR_SGI_OFF + 0x0100: return vg[vm].enabled;  /* ISENABLER0 */
 		default: return 0;
@@ -49,8 +50,10 @@ static uint32_t reg_read(int vm, uint64_t ipa) {
 	}
 	uint64_t off = ipa - VGIC_GICD_BASE;
 	switch (off) {
-	case 0x0000: return vg[vm].gicd_ctlr; /* GICD_CTLR  */
-	case 0x0004: return 0;                /* GICD_TYPER: 32 INTIDs */
+	case 0x0000: return vg[vm].gicd_ctlr; /* GICD_CTLR (RWP=0) */
+	case 0x0004: return 0x0007 | (9u << 19); /* GICD_TYPER: 256 INTIDs, IDbits=9 */
+	case 0x0008: return 0;                /* GICD_IIDR */
+	case 0xFFE8: return 0x30;             /* GICD_PIDR2: GICv3 */
 	default: return 0;
 	}
 }

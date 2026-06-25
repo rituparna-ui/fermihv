@@ -1027,3 +1027,98 @@ void mtenant_real_demo(void) {
 	uart_println("[M19] a REAL OS and a second VM ran concurrently, each isolated "
 	             "(own stage-2 + own vGIC + own timer state).");
 }
+
+/* ------------------------------------------------------------------ */
+/* M20: boot Linux on the fully emulated vGIC (no device passthrough)  */
+/* ------------------------------------------------------------------ */
+
+/* Empty-MMIO emulation: reads return 0, writes ignored. Lets Linux probe
+ * absent devices (PCIe/virtio/RTC) and find nothing, instead of faulting. */
+static void mmio_zero(vcpu_t *v) {
+	uint64_t iss = ESR_ISS(v->exit_esr);
+	if ((iss >> 24) & 1) {
+		int wnr = (iss >> 6) & 1;
+		int srt = (iss >> 16) & 0x1F;
+		if (!wnr && srt != 31)
+			v->x[srt] = 0;
+	}
+	v->pc += 4;
+}
+
+void linux_vgic_boot(void) {
+	stage2_init();                       /* block1 RAM; block0 (GIC/UART/MMIO) unmapped */
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	extern char guest_dtb_start[], guest_dtb_end[];
+	uint64_t dsz = (uint64_t)(guest_dtb_end - guest_dtb_start);
+	for (uint64_t i = 0; i < dsz; i++)
+		((volatile uint8_t *)0x48000000UL)[i] = ((uint8_t *)guest_dtb_start)[i];
+	__asm__ volatile("dsb sy");
+
+	wr_sysreg("cnthctl_el2", 1UL);       /* counter readable, physical timer trapped */
+	wr_sysreg("cntvoff_el2", 0UL);
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 19) | (1UL << 4); /* RW|VM|TSC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], 0x41000000UL, 0, stage2_vttbr(), 0);
+	vcpus[0].x[0] = 0x48000000UL;        /* arm64 boot: x0 = DTB */
+	vcpus[0].x[1] = 0;
+	vcpus[0].x[2] = 0;
+	vcpus[0].x[3] = 0;
+
+	uart_println("[M20] booting Linux on the EMULATED vGIC (no GIC/UART/device");
+	uart_println("      passthrough; timer trapped + injected). Kernel output:");
+	uart_println("------------------------------------------------------------");
+
+	hyptimer_start(10);
+	for (;;) {
+		vcpu_run_once(&vcpus[0]);
+		if (vcpus[0].halted)
+			break;
+
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t id = iar & 0xFFFFFF;
+			if (id == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				if (vgic_irq_enabled(0, 30))
+					vgic_inject(30);
+				else if (vgic_irq_enabled(0, 27))
+					vgic_inject(27);
+			}
+			if (id < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+		if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(0, &vcpus[0], ipa);
+			else if (vuart_contains(ipa))
+				mmio_emulate(&vcpus[0], ipa);
+			else
+				mmio_zero(&vcpus[0]);
+		} else if (ec == EC_SYSREG) {
+			cntp_emulate(0, &vcpus[0]);
+		} else if (ec == EC_SMC64) {
+			psci_handle(&vcpus[0]);
+			vcpus[0].pc += 4;
+		} else if (ec == EC_HVC64) {
+			psci_handle(&vcpus[0]);
+		} else {
+			uart_printf("\n[M20] Linux trap ec=%x (%s) far=%x elr=%x\n",
+			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			break;
+		}
+	}
+	uart_println("------------------------------------------------------------");
+	uart_println("[M20] Linux-on-vGIC run ended.");
+}

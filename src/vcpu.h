@@ -87,6 +87,9 @@ void real_guest_demo(void);
 /* M7: boot a real Linux kernel (image+DTB placed in RAM by the loader). */
 void linux_boot(void);
 
+/* M20: boot Linux on the fully emulated vGIC (no device passthrough). */
+void linux_vgic_boot(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

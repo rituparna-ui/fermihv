@@ -66,4 +66,7 @@ echo
 echo "  (interactive: run ./run.sh linux and type; 'poweroff -f' to halt)"
 echo
 
-exec /bin/busybox sh
+/bin/busybox sh           # interactive shell (when a console with input is attached)
+# If the shell returns (e.g. EOF on a captured console), keep PID 1 alive so
+# the kernel doesn't panic with "Attempted to kill init".
+while true; do /bin/busybox sleep 3600; done

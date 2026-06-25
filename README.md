@@ -37,6 +37,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M17 | **Real kernel on the vGIC**: fermi-os boots on the emulated GIC (no passthrough) |
 | M18 | **Per-VM vGIC**: two isolated VMs, each on its own emulated GIC, concurrent + time-sliced |
 | M19 | **Real OS as a tenant**: fermi-os boots to its shell concurrently with a second isolated VM |
+| M20 | **Linux on the emulated vGIC**: boots to userspace with no device passthrough |
 
 ## Architecture
 

@@ -88,7 +88,9 @@ void hv_main(void) {
 	 *  - fermi-os (non-zero first word). QEMU's auto-DTB sits at 0x40000000. */
 	uint32_t lmagic = *(volatile uint32_t *)(0x41000000UL + 56);
 	uint32_t marker = *(volatile uint32_t *)0x46000000UL;
-	if (lmagic == 0x644d5241UL) {
+	if (marker == 0x0FE33108UL) {
+		linux_vgic_boot();  /* Linux on the emulated vGIC (./run.sh linux-vgic) */
+	} else if (lmagic == 0x644d5241UL) {
 		linux_boot();
 	} else if (marker == 0x0FE33105UL) {
 		fermios_boot();   /* embedded fermi-os image, selected by ./run.sh fermios */
