@@ -5,10 +5,12 @@
 #include "vdev.h"
 #include "gic.h"
 #include "timer.h"
+#include "vgic.h"
 
 extern void guest_counter_entry(void);
 extern void guest_vuart_entry(void);
 extern void guest_virq_entry(void);
+extern void guest_vgic_entry(void);
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -216,6 +218,70 @@ void virq_demo(int nticks) {
 
 	hyptimer_stop();
 	uart_printf("[M6b] delivered %u virtual timer ticks to the guest.\n", ticks);
+}
+
+/* ------------------------------------------------------------------ */
+/* M13: software vGIC -- guest drives an emulated GICD/GICR distributor */
+/* ------------------------------------------------------------------ */
+
+void vgic_demo(int nticks) {
+	stage2_init();                       /* block1 RAM; block0 (GIC) left unmapped */
+	vgic_reset();
+
+	/* RW | VM | DC | IMO. The guest's GIC MMIO traps to the vGIC; its CPU
+	 * interface (ICC_*) is auto-virtualized to ICV; we inject via ICH_LR. */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL)); /* enable virtual CPU iface */
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], (uint64_t)&guest_vgic_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+	hyptimer_start(100);
+
+	uart_println("[M13] software vGIC: guest configures emulated GICD/GICR,");
+	uart_println("      hypervisor injects a virtual timer only when enabled.");
+
+	int ticks = 0;
+	while (ticks < nticks) {
+		vcpu_run_once(&vcpus[0]);
+
+		if ((vcpus[0].exit_reason & 3) == 1) {
+			/* Physical EL2 timer tick: inject a virtual interrupt ONLY if the
+			 * guest enabled INTID 27 in the emulated distributor. */
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				if (vgic_irq_enabled(27))
+					vgic_inject(27);
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if (ec == EC_HVC64) {
+			ticks++;
+			uart_printf("[M13] guest serviced vGIC IRQ #%u (acked vINTID via ICV)\n",
+			            ticks);
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(&vcpus[0], ipa);
+			else
+				stage2_map_1gb(ipa & ~0x3FFFFFFFUL);
+		} else {
+			uart_printf("[M13] unexpected exit ec=%x (%s), stopping\n",
+			            ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_printf("[M13] vGIC delivered %u interrupts through the emulated "
+	            "distributor.\n", ticks);
 }
 
 /* ------------------------------------------------------------------ */

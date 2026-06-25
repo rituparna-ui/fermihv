@@ -63,6 +63,9 @@ void sched_demo(void);
 /* M6b demo: deliver `nticks` virtual timer interrupts to a guest. */
 void virq_demo(int nticks);
 
+/* M13 demo: guest drives an emulated GICv3 distributor (software vGIC). */
+void vgic_demo(int nticks);
+
 /* M7 demo: load a separately-built guest kernel image and boot it at EL1. */
 void real_guest_demo(void);
 

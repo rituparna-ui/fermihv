@@ -117,3 +117,95 @@ guest_irq:
 
 guest_unhandled:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M13 guest: drives the EMULATED GICv3 (GICD/GICR MMIO trap+emulate). */
+/* ------------------------------------------------------------------ */
+.global guest_vgic_entry
+guest_vgic_entry:
+	/* GICD_CTLR = ARE_NS | EnableGrp1  (MMIO -> traps to the vGIC) */
+	movz	x2, #0x0800, lsl #16     /* 0x08000000 GICD */
+	mov	w0, #0x12
+	str	w0, [x2]
+
+	/* GICR_WAKER: clear ProcessorSleep (emulated -> reports awake) */
+	movz	x3, #0x080A, lsl #16     /* 0x080A0000 GICR RD_base */
+	str	wzr, [x3, #0x14]
+
+	/* GICR SGI frame: all Group 1, enable INTID 27 (virtual timer PPI) */
+	movz	x4, #0x080B, lsl #16     /* 0x080B0000 GICR SGI_base */
+	mov	w0, #0xFFFFFFFF
+	str	w0, [x4, #0x80]          /* IGROUPR0 */
+	mov	w0, #1
+	lsl	w0, w0, #27
+	str	w0, [x4, #0x100]         /* ISENABLER0: enable INTID 27 */
+
+	/* CPU interface (system register / ICV under IMO + ICH_HCR_EL2.En) */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+
+	adr	x0, gvgic_vectors
+	msr	vbar_el1, x0
+	isb
+	mov	x21, #0
+	msr	daifclr, #2
+1:
+	wfi
+	b	1b
+
+	.balign 2048
+gvgic_vectors:
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_irq                /* idx 5: Cur EL SPx IRQ */
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+	.balign 0x80
+	b	gvgic_bad
+
+gvgic_irq:
+	sub	sp, sp, #32
+	stp	x0, x1, [sp]
+	stp	x29, x30, [sp, #16]
+	mrs	x0, icc_iar1_el1         /* virtual ack -> vINTID (from list register) */
+	add	x21, x21, #1
+	msr	icc_eoir1_el1, x0
+	mov	x0, x21
+	hvc	#0
+	ldp	x29, x30, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #32
+	eret
+
+gvgic_bad:
+	b	.
