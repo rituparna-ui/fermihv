@@ -89,6 +89,8 @@ void hv_main(void) {
 		linux_boot();
 	} else if (marker == 0x0FE33105UL) {
 		fermios_boot();   /* embedded fermi-os image, selected by ./run.sh fermios */
+	} else if (marker == 0x0FE33106UL) {
+		fermios_vgic_boot();  /* fermi-os on the emulated vGIC (./run.sh fermios-vgic) */
 	} else {
 		uart_println("[HV] no guest image loaded; demos only.");
 	}

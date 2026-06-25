@@ -736,3 +736,109 @@ void fermios_boot(void) {
 	uart_println("------------------------------------------------------------");
 	uart_println("[M12] fermi-os guest run ended.");
 }
+
+/* ------------------------------------------------------------------ */
+/* M17: fermi-os on the EMULATED vGIC (no GIC/UART passthrough)        */
+/* ------------------------------------------------------------------ */
+
+/* Emulated EL1 physical timer state (the guest's CNTP_* are trapped so its
+ * timer never fires a real interrupt; we drive ticks from the EL2 CNTHP). */
+static uint64_t g_cntp_ctl, g_cntp_cval, g_cntp_tval;
+
+static void cntp_emulate(vcpu_t *v) {
+	uint64_t iss = ESR_ISS(v->exit_esr);
+	int dir = iss & 1;                 /* 0 = write (MSR), 1 = read (MRS) */
+	int rt = (iss >> 5) & 0x1F;
+	int op2 = (iss >> 17) & 7;
+	uint64_t crn = (iss >> 10) & 0xF, crm = (iss >> 1) & 0xF;
+	if (crn == 14 && crm == 2) {       /* CNTP_TVAL(op2=0)/CTL(1)/CVAL(2)_EL0 */
+		if (dir == 0) {
+			uint64_t val = (rt == 31) ? 0 : v->x[rt];
+			if (op2 == 1) g_cntp_ctl = val;
+			else if (op2 == 2) g_cntp_cval = val;
+			else g_cntp_tval = val;
+		} else {
+			uint64_t val = (op2 == 1) ? g_cntp_ctl
+			             : (op2 == 2) ? g_cntp_cval : g_cntp_tval;
+			if (rt != 31)
+				v->x[rt] = val;
+		}
+	}
+	v->pc += 4;
+}
+
+void fermios_vgic_boot(void) {
+	stage2_init();                       /* block1 RAM; block0 (GIC+UART) unmapped */
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	/* Place the embedded fermi-os image at its native load address. */
+	extern char fermios_image_start[], fermios_image_end[];
+	uint64_t sz = (uint64_t)(fermios_image_end - fermios_image_start);
+	volatile uint8_t *dst = (volatile uint8_t *)0x40000000UL;
+	for (uint64_t i = 0; i < sz; i++)
+		dst[i] = ((uint8_t *)fermios_image_start)[i];
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	/* Allow the counter (CNTPCT) but trap the physical timer (CNTP_*). */
+	wr_sysreg("cnthctl_el2", 1UL);       /* EL1PCTEN=1, EL1PCEN=0 */
+	wr_sysreg("cntvoff_el2", 0UL);
+
+	/* RW | VM | IMO | TSC (no DC: fermi-os runs its own MMU). */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 4) | (1UL << 19);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL)); /* virtual CPU iface on */
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], 0x40000000UL, 0, stage2_vttbr(), 0);
+
+	uart_println("[M17] booting fermi-os on the EMULATED vGIC (GIC+UART emulated,");
+	uart_println("      timer trapped; ticks injected via vGIC). Output follows:");
+	uart_println("------------------------------------------------------------");
+
+	hyptimer_start(100);
+	int guard = 0;
+	while (guard++ < 2000000) {
+		vcpu_run_once(&vcpus[0]);
+		if (vcpus[0].halted)
+			break;
+
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				if (vgic_irq_enabled(30))
+					vgic_inject(30);     /* deliver the guest's timer tick */
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+		if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(&vcpus[0], ipa);
+			else if (vuart_contains(ipa))
+				mmio_emulate(&vcpus[0], ipa);
+			else
+				stage2_map_1gb(ipa & ~0x3FFFFFFFUL);
+		} else if (ec == EC_SYSREG) {
+			cntp_emulate(&vcpus[0]);     /* emulated physical timer */
+		} else if (ec == EC_SMC64) {
+			psci_handle(&vcpus[0]);
+			vcpus[0].pc += 4;
+		} else {
+			uart_printf("\n[M17] fermi-os trap ec=%x (%s) far=%x elr=%x\n",
+			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_println("------------------------------------------------------------");
+	uart_println("[M17] fermi-os-on-vGIC run ended.");
+}

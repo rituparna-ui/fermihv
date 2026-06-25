@@ -84,4 +84,7 @@ void linux_boot(void);
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 
+/* M17: boot fermi-os on the fully emulated vGIC (no GIC/UART passthrough). */
+void fermios_vgic_boot(void);
+
 #endif /* FERMIHV_VCPU_H */

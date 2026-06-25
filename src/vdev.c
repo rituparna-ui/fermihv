@@ -18,7 +18,7 @@ static void vuart_write(uint64_t off, uint64_t val) {
 
 static uint64_t vuart_read(uint64_t off) {
 	if (off == VUART_FR)
-		return 0;   /* TXFF=0, RXFE=0: never full, claim no input */
+		return 1u << 4;   /* TXFF=0 (never full), RXFE=1 (no input pending) */
 	return 0;
 }
 

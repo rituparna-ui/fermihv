@@ -34,6 +34,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M14 | **Virtual IPIs**: vCPU0 sends an SGI to vCPU1 through the vGIC (SMP groundwork) |
 | M15 | **Preemptive dual-core guest**: two time-sliced vCPUs coordinating via IPIs |
 | M16 | **Multi-tenancy**: two isolated VMs (per-VM stage-2 + VMID), same IPA, distinct host RAM |
+| M17 | **Real kernel on the vGIC**: fermi-os boots on the emulated GIC (no passthrough) |
 
 ## Architecture
 
