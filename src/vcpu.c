@@ -12,6 +12,7 @@ extern void guest_vuart_entry(void);
 extern void guest_virq_entry(void);
 extern void guest_vgic_entry(void);
 extern void guest_ipi_entry(void);
+extern void guest_smp_entry(void);
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -356,6 +357,72 @@ void smp_demo(void) {
 	}
 	uart_println(got ? "[M14] virtual IPI delivered between vCPUs through the vGIC."
 	                 : "[M14] IPI not delivered (timeout).");
+}
+
+/* ------------------------------------------------------------------ */
+/* M15: a running dual-core guest -- two time-sliced vCPUs + IPIs      */
+/* ------------------------------------------------------------------ */
+
+void smp_sched_demo(void) {
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"((1UL << 0) | (1UL << 8))); /* En|TC */
+	__asm__ volatile("isb");
+
+	for (int i = 0; i < 2; i++) {
+		vcpu_init(&vcpus[i], (uint64_t)&guest_smp_entry,
+		          (uint64_t)(gstack[i] + sizeof(gstack[i])), stage2_vttbr(), i);
+		vcpus[i].x[0] = i;
+	}
+
+	uart_println("[M15] dual-core guest: 2 vCPUs time-sliced by the EL2 timer;");
+	uart_println("      vCPU0 (producer) IPIs vCPU1 (consumer). Both run concurrently.");
+
+	hyptimer_start(10);              /* 10 ms scheduling quantum */
+	int cur = 0, slices = 0, guard = 0;
+	while (slices < 12 && guard++ < 100000) {
+		int s = vgic_pop_sgi(cur);
+		if (s >= 0)
+			vgic_inject((uint32_t)s);
+
+		vcpu_run_once(&vcpus[cur]);
+
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				slices++;
+				cur ^= 1;            /* time-slice expired: switch vCPU */
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_SYSREG) {
+			uint64_t iss = ESR_ISS(vcpus[cur].exit_esr);
+			int rt = (iss >> 5) & 0x1F;
+			uint64_t val = (rt == 31) ? 0 : vcpus[cur].x[rt];
+			vgic_post_sgi(cur, (val >> 24) & 0xF);
+			vcpus[cur].pc += 4;      /* keep running the producer */
+		} else {
+			uart_printf("[M15] vCPU%d unexpected exit ec=%x (%s)\n",
+			            cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+
+	uart_printf("[M15] after %d time-slices: vCPU0 work=%u, vCPU1 work=%u, "
+	            "vCPU1 received %u IPIs\n",
+	            slices, vcpus[0].x[20], vcpus[1].x[20], vcpus[1].x[21]);
+	uart_println("[M15] dual-core guest: both vCPUs ran (preempted) and "
+	             "coordinated via virtual IPIs.");
 }
 
 /* ------------------------------------------------------------------ */

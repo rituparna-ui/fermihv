@@ -292,3 +292,90 @@ gipi_irq:
 
 gipi_bad:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M15 guest: dual-core. vCPU0 = producer (does work, periodically      */
+/* IPIs vCPU1 then yields); vCPU1 = consumer (does work, counts IPIs).  */
+/* x0 on entry = this vCPU's id. Both are time-sliced by the EL2 timer. */
+/* ------------------------------------------------------------------ */
+.global guest_smp_entry
+guest_smp_entry:
+	mov	x22, x0                  /* cpu id */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gsmp_vectors
+	msr	vbar_el1, x0
+	isb
+	mov	x20, #0                  /* work-units counter */
+	mov	x21, #0                  /* IPIs received (consumer) */
+	msr	daifclr, #2
+	cbnz	x22, gsmp_consumer
+
+gsmp_producer:                           /* vCPU0 */
+	add	x20, x20, #1
+	and	x1, x20, #0x1FFFFF       /* every 2,097,152 work units */
+	cbnz	x1, gsmp_producer
+	mov	x0, #1
+	lsl	x0, x0, #24              /* SGI INTID 1 */
+	mov	x1, #1
+	lsl	x1, x1, #40              /* IRM = all-but-self */
+	orr	x0, x0, x1
+	msr	icc_sgi1r_el1, x0        /* -> traps to EL2, routed to vCPU1 */
+	b	gsmp_producer
+
+gsmp_consumer:                           /* vCPU1 */
+	add	x20, x20, #1
+	b	gsmp_consumer
+
+	.balign 2048
+gsmp_vectors:
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_irq                 /* idx 5: Cur EL SPx IRQ */
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+	.balign 0x80
+	b	gsmp_bad
+
+gsmp_irq:
+	sub	sp, sp, #16
+	str	x0, [sp]
+	mrs	x0, icc_iar1_el1
+	add	x21, x21, #1             /* count received IPIs */
+	msr	icc_eoir1_el1, x0
+	ldr	x0, [sp]
+	add	sp, sp, #16
+	eret
+
+gsmp_bad:
+	b	.

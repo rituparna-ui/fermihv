@@ -32,6 +32,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M12 | **fermi-os as a guest**: another from-scratch kernel boots to its EL0 shell (EL2→EL1→EL0) |
 | M13 | **Software vGIC**: emulated GICD/GICR (trap+emulate) gates virtual interrupt injection |
 | M14 | **Virtual IPIs**: vCPU0 sends an SGI to vCPU1 through the vGIC (SMP groundwork) |
+| M15 | **Preemptive dual-core guest**: two time-sliced vCPUs coordinating via IPIs |
 
 ## Architecture
 
