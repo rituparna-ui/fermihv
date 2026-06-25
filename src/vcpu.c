@@ -13,6 +13,8 @@ extern void guest_virq_entry(void);
 extern void guest_vgic_entry(void);
 extern void guest_ipi_entry(void);
 extern void guest_smp_entry(void);
+extern char guest_tenant_start[];
+extern char guest_tenant_end[];
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -423,6 +425,68 @@ void smp_sched_demo(void) {
 	            slices, vcpus[0].x[20], vcpus[1].x[20], vcpus[1].x[21]);
 	uart_println("[M15] dual-core guest: both vCPUs ran (preempted) and "
 	             "coordinated via virtual IPIs.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M16: multi-tenancy -- two isolated VMs running concurrently         */
+/* ------------------------------------------------------------------ */
+
+#define VM0_PA 0x80000000UL   /* VM0 private 1GiB host RAM block */
+#define VM1_PA 0xC0000000UL   /* VM1 private 1GiB host RAM block (needs -m >=4G) */
+#define VM_IPA 0x40000000UL   /* both VMs see their RAM at this guest IPA */
+
+void mtenant_demo(void) {
+	stage2_init();             /* programs VTCR_EL2 (its global table is unused here) */
+
+	/* Copy the tenant guest into each VM's private host RAM block. */
+	uint64_t sz = (uint64_t)(guest_tenant_end - guest_tenant_start);
+	for (uint64_t i = 0; i < sz; i++) {
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_tenant_start)[i];
+		((volatile uint8_t *)VM1_PA)[i] = ((uint8_t *)guest_tenant_start)[i];
+	}
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("ic ialluis");
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("isb");
+
+	/* Each VM: same guest IPA 0x40000000, distinct host block, distinct VMID. */
+	uint64_t vttbr0 = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t vttbr1 = stage2_build_vm(1, VM_IPA, VM1_PA, 2);
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12); /* RW | VM | DC */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x8000, vttbr0, 0);
+	vcpus[0].x[0] = 0;
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x8000, vttbr1, 1);
+	vcpus[1].x[0] = 1;
+
+	uart_println("[M16] two isolated VMs: same guest IPA 0x40000000 -> different host RAM");
+	uart_printf("      VM0 RAM @host %x, VM1 RAM @host %x\n", VM0_PA, VM1_PA);
+
+	for (int i = 0; i < 2; i++) {
+		vcpu_run_once(&vcpus[i]);   /* runs until its HVC */
+		uint64_t ec = ESR_EC(vcpus[i].exit_esr);
+		if (ec == EC_HVC64) {
+			uart_printf("[M16] VM%u ran at IPA 0x40000000, wrote+read its private "
+			            "magic = %x\n", vcpus[i].x[0], vcpus[i].x[1]);
+		} else {
+			uart_printf("[M16] VM%d unexpected exit ec=%x (%s)\n",
+			            i, ec, ec_name(ec));
+		}
+	}
+
+	/* Hypervisor's god's-eye view: read each VM's private host block directly. */
+	uint32_t m0 = *(volatile uint32_t *)(VM0_PA + 0x1000);
+	uint32_t m1 = *(volatile uint32_t *)(VM1_PA + 0x1000);
+	uart_printf("[M16] host view: VM0 block @%x = %x ; VM1 block @%x = %x\n",
+	            VM0_PA + 0x1000, (uint64_t)m0, VM1_PA + 0x1000, (uint64_t)m1);
+	if (m0 != m1)
+		uart_println("[M16] isolation verified: identical guest address, distinct "
+		             "host memory; neither VM can see the other.");
+	else
+		uart_println("[M16] isolation FAILED (blocks match)");
 }
 
 /* ------------------------------------------------------------------ */

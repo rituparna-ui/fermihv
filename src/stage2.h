@@ -19,4 +19,8 @@ void stage2_map_1gb_device(uint64_t ipa);
  * (VMID 0). */
 uint64_t stage2_vttbr(void);
 
+/* Build VM `vm`'s (0/1) private stage-2: map one 1GiB IPA block to a private
+ * host PA block with VMID `vmid`. Returns the VTTBR_EL2 value. */
+uint64_t stage2_build_vm(int vm, uint64_t ipa, uint64_t pa, int vmid);
+
 #endif /* FERMIHV_STAGE2_H */

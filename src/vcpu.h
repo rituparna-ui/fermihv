@@ -72,6 +72,9 @@ void smp_demo(void);
 /* M15 demo: a running dual-core guest -- two time-sliced vCPUs + IPIs. */
 void smp_sched_demo(void);
 
+/* M16 demo: two isolated VMs running concurrently (multi-tenancy). */
+void mtenant_demo(void);
+
 /* M7 demo: load a separately-built guest kernel image and boot it at EL1. */
 void real_guest_demo(void);
 

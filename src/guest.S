@@ -379,3 +379,31 @@ gsmp_irq:
 
 gsmp_bad:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M16 guest: a tenant. Writes a VM-specific magic to guest IPA         */
+/* 0x40001000, reads it back, and reports (x0=id, x1=value). Each VM    */
+/* runs an identical copy from its own private host RAM block, so the   */
+/* same IPA is physically distinct per VM. x0 on entry = VM id.         */
+/* This blob is position-independent: copied to each VM's RAM by the HV.*/
+/* ------------------------------------------------------------------ */
+.global guest_tenant_start
+.global guest_tenant_entry
+.global guest_tenant_end
+guest_tenant_start:
+guest_tenant_entry:
+	mov	x20, x0                  /* VM id */
+	movz	x1, #0x4000, lsl #16     /* 0x40000000 */
+	movk	x1, #0x1000              /* 0x40001000 (private scratch IPA) */
+	movz	x2, #0xA5A5, lsl #16     /* 0xA5A50000 */
+	orr	x2, x2, x20              /* magic = 0xA5A50000 | id */
+	str	x2, [x1]
+	dsb	sy
+	ldr	x3, [x1]                 /* read it back */
+	mov	x0, x20
+	mov	x1, x3
+	hvc	#0                       /* report (x0=id, x1=magic) */
+1:
+	wfi
+	b	1b
+guest_tenant_end:

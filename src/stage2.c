@@ -71,3 +71,21 @@ void stage2_map_1gb_device(uint64_t ipa) {
 	__asm__ volatile("dsb ish");
 	__asm__ volatile("isb");
 }
+
+/* --- per-VM stage-2 tables for multi-tenancy ---
+ * Each VM gets its own L1 table mapping one 1GiB guest-IPA block to a private
+ * host-PA block (Normal memory) and a distinct VMID, so two VMs can use the
+ * same guest address yet be physically isolated; VMID-tagged TLB entries make
+ * VTTBR switches flush-free. */
+static uint64_t s2_vm[2][512] __attribute__((aligned(4096)));
+
+uint64_t stage2_build_vm(int vm, uint64_t ipa, uint64_t pa, int vmid) {
+	for (int i = 0; i < 512; i++)
+		s2_vm[vm][i] = 0;
+	s2_vm[vm][(ipa >> 30) & 0x1FF] = (pa & ~0x3FFFFFFFUL) | S2_BLOCK_NORMAL;
+	__asm__ volatile("dsb ish");
+	__asm__ volatile("tlbi vmalls12e1");
+	__asm__ volatile("dsb ish");
+	__asm__ volatile("isb");
+	return (uint64_t)&s2_vm[vm][0] | ((uint64_t)vmid << 48);
+}
