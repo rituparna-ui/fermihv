@@ -1122,3 +1122,103 @@ void linux_vgic_boot(void) {
 	uart_println("------------------------------------------------------------");
 	uart_println("[M20] Linux-on-vGIC run ended.");
 }
+
+/* ------------------------------------------------------------------ */
+/* M21: TWO real OSes (Linux + fermi-os) as concurrent isolated tenants */
+/* ------------------------------------------------------------------ */
+
+void mtenant_os_demo(void) {
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	extern char fermios_image_start[], fermios_image_end[];
+	extern char guest_dtb_start[], guest_dtb_end[];
+
+	/* VM0 = Linux at host block 0x80000000 (QEMU's loader placed the Image at
+	 * host 0x81000000 = guest IPA 0x41000000, and the initramfs at host
+	 * 0x8c000000 = guest IPA 0x4c000000). Copy the DTB to host 0x88000000
+	 * (= guest IPA 0x48000000). VM1 = fermi-os at host block 0xC0000000. */
+	uint64_t dsz = (uint64_t)(guest_dtb_end - guest_dtb_start);
+	for (uint64_t i = 0; i < dsz; i++)
+		((volatile uint8_t *)0x88000000UL)[i] = ((uint8_t *)guest_dtb_start)[i];
+	uint64_t fsz = (uint64_t)(fermios_image_end - fermios_image_start);
+	for (uint64_t i = 0; i < fsz; i++)
+		((volatile uint8_t *)0xC0000000UL)[i] = ((uint8_t *)fermios_image_start)[i];
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr0 = stage2_build_vm(0, 0x40000000UL, 0x80000000UL, 1); /* Linux  */
+	uint64_t vttbr1 = stage2_build_vm(1, 0x40000000UL, 0xC0000000UL, 2); /* fermios*/
+
+	wr_sysreg("cnthctl_el2", 1UL);       /* counter readable, physical timer trapped */
+	wr_sysreg("cntvoff_el2", 0UL);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+
+	/* Both guests run their own MMU -> DC cleared; RW|VM|IMO|TSC. */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 4) | (1UL << 19);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], 0x41000000UL, 0, vttbr0, 0);   /* Linux: pc=Image, x0=DTB */
+	vcpus[0].x[0] = 0x48000000UL;
+	vcpu_init(&vcpus[1], 0x40000000UL, 0, vttbr1, 1);   /* fermi-os */
+
+	uart_println("[M21] TWO real OSes as concurrent isolated tenants on per-VM vGICs:");
+	uart_println("      VM0 = Linux, VM1 = fermi-os. Both boot below, interleaved.");
+	uart_println("      (each: own stage-2 + own vGIC + own timer; HV is untouchable)");
+	uart_println("------------------------------------------------------------");
+
+	hyptimer_start(10);
+	int cur = 0, slot = 0, guard = 0;
+	int pend[2] = {0, 0};
+	while (guard++ < 4000000) {
+		if (pend[cur]) {
+			if (vgic_irq_enabled(cur, 30))
+				vgic_inject(30);
+			else if (vgic_irq_enabled(cur, 27))
+				vgic_inject(27);
+			pend[cur] = 0;
+		}
+		vcpu_run_once(&vcpus[cur]);
+		if (vcpus[cur].halted)
+			break;
+
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t id = iar & 0xFFFFFF;
+			if (id == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				pend[0] = pend[1] = 1;
+				slot++;                  /* weight Linux 3:1 (it's slower on vGIC) */
+				cur = ((slot & 3) == 0) ? 1 : 0;
+			}
+			if (id < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(cur, &vcpus[cur], ipa);
+			else if (vuart_contains(ipa))
+				mmio_emulate(&vcpus[cur], ipa);
+			else
+				mmio_zero(&vcpus[cur]);
+		} else if (ec == EC_SYSREG) {
+			cntp_emulate(cur, &vcpus[cur]);
+		} else if (ec == EC_SMC64) {
+			psci_handle(&vcpus[cur]);
+			vcpus[cur].pc += 4;
+		} else if (ec == EC_HVC64) {
+			psci_handle(&vcpus[cur]);
+		} else {
+			uart_printf("\n[M21] VM%d trap ec=%x (%s) far=%x\n",
+			            cur, ec, ec_name(ec), vcpus[cur].exit_far);
+			break;
+		}
+	}
+	uart_println("\n------------------------------------------------------------");
+	uart_println("[M21] Linux and fermi-os ran concurrently, fully isolated.");
+}

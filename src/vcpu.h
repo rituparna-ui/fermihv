@@ -90,6 +90,9 @@ void linux_boot(void);
 /* M20: boot Linux on the fully emulated vGIC (no device passthrough). */
 void linux_vgic_boot(void);
 
+/* M21: Linux + fermi-os as two concurrent isolated co-tenants. */
+void mtenant_os_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

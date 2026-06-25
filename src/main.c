@@ -90,6 +90,8 @@ void hv_main(void) {
 	uint32_t marker = *(volatile uint32_t *)0x46000000UL;
 	if (marker == 0x0FE33108UL) {
 		linux_vgic_boot();  /* Linux on the emulated vGIC (./run.sh linux-vgic) */
+	} else if (marker == 0x0FE33109UL) {
+		mtenant_os_demo();  /* Linux + fermi-os co-tenants (./run.sh mtenant-os) */
 	} else if (lmagic == 0x644d5241UL) {
 		linux_boot();
 	} else if (marker == 0x0FE33105UL) {

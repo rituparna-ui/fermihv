@@ -130,6 +130,28 @@ case "$cmd" in
 			-device loader,addr=0x46000000,data=0x0FE33107,data-len=4 \
 			2>&1 || true'
 		;;
+	mtenant-os-raw)
+		drun make all
+		echo "[run.sh] Linux + fermi-os as concurrent isolated co-tenants (captured)..."
+		drun bash -c 'timeout 120 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 3G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x81000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x8c000000,force-raw=on \
+			-device loader,addr=0x46000000,data=0x0FE33109,data-len=4 \
+			2>&1 || true'
+		;;
+	mtenant-os)
+		drun make all
+		echo "[run.sh] Linux + fermi-os as concurrent isolated co-tenants (interactive)"
+		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
+			qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
+			-m 3G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x81000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x8c000000,force-raw=on \
+			-device loader,addr=0x46000000,data=0x0FE33109,data-len=4
+		;;
 	linux-vgic-raw)
 		drun make all
 		echo "[run.sh] booting Linux on the EMULATED vGIC (captured)..."
