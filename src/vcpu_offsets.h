@@ -13,5 +13,10 @@
 #define VCPU_EXIT_ESR   288
 #define VCPU_EXIT_FAR   296
 #define VCPU_EXIT_HPFAR 304
+/* FP/SIMD state (saved/restored across the world switch). 320 is 16-aligned
+ * for `stp q,q`; q0..q31 occupy 512 bytes. */
+#define VCPU_FP         320
+#define VCPU_FPSR       832
+#define VCPU_FPCR       840
 
 #endif /* FERMIHV_VCPU_OFFSETS_H */

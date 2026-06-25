@@ -42,6 +42,29 @@ __guest_enter:                 /* x0 = vcpu* */
 	msr	sp_el0, x1
 	isb
 
+	/* restore guest FP/SIMD (x0 still = vcpu base) */
+	add	x1, x0, #VCPU_FP
+	ldp	q0,  q1,  [x1, #0]
+	ldp	q2,  q3,  [x1, #32]
+	ldp	q4,  q5,  [x1, #64]
+	ldp	q6,  q7,  [x1, #96]
+	ldp	q8,  q9,  [x1, #128]
+	ldp	q10, q11, [x1, #160]
+	ldp	q12, q13, [x1, #192]
+	ldp	q14, q15, [x1, #224]
+	ldp	q16, q17, [x1, #256]
+	ldp	q18, q19, [x1, #288]
+	ldp	q20, q21, [x1, #320]
+	ldp	q22, q23, [x1, #352]
+	ldp	q24, q25, [x1, #384]
+	ldp	q26, q27, [x1, #416]
+	ldp	q28, q29, [x1, #448]
+	ldp	q30, q31, [x1, #480]
+	ldr	x1, [x0, #VCPU_FPSR]
+	msr	fpsr, x1
+	ldr	x1, [x0, #VCPU_FPCR]
+	msr	fpcr, x1
+
 	/* restore guest GP regs; x0 is reloaded last since it is the base ptr */
 	ldr	x1,  [x0, #8]
 	ldp	x2,  x3,  [x0, #16]
@@ -103,6 +126,29 @@ __guest_exit:
 	str	x1, [x0, #VCPU_EXIT_FAR]
 	mrs	x1, hpfar_el2
 	str	x1, [x0, #VCPU_EXIT_HPFAR]
+
+	/* save guest FP/SIMD (x0 = vcpu base) */
+	add	x1, x0, #VCPU_FP
+	stp	q0,  q1,  [x1, #0]
+	stp	q2,  q3,  [x1, #32]
+	stp	q4,  q5,  [x1, #64]
+	stp	q6,  q7,  [x1, #96]
+	stp	q8,  q9,  [x1, #128]
+	stp	q10, q11, [x1, #160]
+	stp	q12, q13, [x1, #192]
+	stp	q14, q15, [x1, #224]
+	stp	q16, q17, [x1, #256]
+	stp	q18, q19, [x1, #288]
+	stp	q20, q21, [x1, #320]
+	stp	q22, q23, [x1, #352]
+	stp	q24, q25, [x1, #384]
+	stp	q26, q27, [x1, #416]
+	stp	q28, q29, [x1, #448]
+	stp	q30, q31, [x1, #480]
+	mrs	x1, fpsr
+	str	x1, [x0, #VCPU_FPSR]
+	mrs	x1, fpcr
+	str	x1, [x0, #VCPU_FPCR]
 
 	/* switch back to the hypervisor stack and restore callee-saved regs */
 	ldr	x1, [x0, #VCPU_HYP_SP]

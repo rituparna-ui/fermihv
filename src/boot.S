@@ -19,6 +19,13 @@ _start:
 	ldr	x0, =__stack_top
 	mov	sp, x0
 
+	// Allow FP/SIMD at EL2 (clear CPTR_EL2.TFP) so the world switch can
+	// save/restore the guests' q0-q31 / FPSR / FPCR.
+	mrs	x0, cptr_el2
+	bic	x0, x0, #(1 << 10)
+	msr	cptr_el2, x0
+	isb
+
 	// Zero the BSS [__bss_start, __bss_end).
 	ldr	x0, =__bss_start
 	ldr	x1, =__bss_end

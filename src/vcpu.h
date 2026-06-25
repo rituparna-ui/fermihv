@@ -22,6 +22,11 @@ typedef struct vcpu {
 	uint64_t exit_far;    /* FAR_EL2  at exit */
 	uint64_t exit_hpfar;  /* HPFAR_EL2 at exit */
 
+	/* --- FP/SIMD state (saved/restored by world.S) --- */
+	uint64_t _pad0;                 /* align q[] to 16 (offset 320) */
+	unsigned __int128 q[32];        /* q0..q31 */
+	uint64_t fpsr, fpcr;
+
 	/* --- guest EL1 system registers (C-managed) --- */
 	uint64_t sctlr_el1, cpacr_el1;
 	uint64_t ttbr0_el1, ttbr1_el1, tcr_el1, mair_el1, amair_el1;
@@ -44,6 +49,9 @@ _Static_assert(offsetof(vcpu_t, exit_reason) == VCPU_EXIT_REASON, "exit_reason")
 _Static_assert(offsetof(vcpu_t, exit_esr) == VCPU_EXIT_ESR, "exit_esr offset");
 _Static_assert(offsetof(vcpu_t, exit_far) == VCPU_EXIT_FAR, "exit_far offset");
 _Static_assert(offsetof(vcpu_t, exit_hpfar) == VCPU_EXIT_HPFAR, "exit_hpfar");
+_Static_assert(offsetof(vcpu_t, q) == VCPU_FP, "fp q offset");
+_Static_assert(offsetof(vcpu_t, fpsr) == VCPU_FPSR, "fpsr offset");
+_Static_assert(offsetof(vcpu_t, fpcr) == VCPU_FPCR, "fpcr offset");
 
 /* Defined in world.S: load guest context and eret; returns here (via
  * __guest_exit) once the guest traps back to EL2. */
