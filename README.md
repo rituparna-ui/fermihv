@@ -8,9 +8,10 @@ kernel** as a guest.
 ## Status
 
 All milestones boot and self-verify. The headline result: a real Debian
-**Linux 6.12** kernel boots as a guest to userspace (PID 1), exercising its
-own MMU, the ARM generic timer, GICv3 interrupts, and PCIe enumeration, then
-calls PSCI — which the hypervisor handles.
+**Linux 6.12** kernel boots as a guest **to userspace** — its PID 1 `/init`
+(from an initramfs) prints on the console and heartbeats via `nanosleep`,
+exercising the guest's MMU, the ARM generic timer, GICv3 interrupts, PCIe
+enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 
 | Milestone | What it proves |
 |-----------|----------------|
@@ -24,6 +25,7 @@ calls PSCI — which the hypervisor handles.
 | M6b | Virtual interrupt injection (`ICH_LR0_EL2`) → guest virtual timer |
 | M7 | Load an external guest image; guest runs its own stage-1 MMU |
 | M7 (goal) | **Boot a real Linux kernel** (device passthrough + DTB + PSCI) |
+| M8 | **Linux reaches userspace** (PID 1 `/init` via an initramfs) |
 
 ## Architecture
 

@@ -40,12 +40,34 @@ $(GUEST_BIN): $(GUEST_DIR)/nano_boot.S $(GUEST_DIR)/nano.c $(GUEST_DIR)/nano.ld
 # guest_image.S incbin's the guest binary, so it must exist first.
 $(BUILD)/guest_image.o: $(GUEST_BIN)
 
-# Guest device tree blob, compiled from the checked-in source.
-GUEST_DTB := $(BUILD)/guest.dtb
-$(GUEST_DTB): $(GUEST_DIR)/guest.dts
+# Guest device tree blob, compiled from the checked-in source. We also build
+# a tiny initramfs (static /init) and inject its location into the DTB so the
+# Linux guest reaches userspace instead of panicking for lack of a rootfs.
+INITRD_ADDR  := 0x4c000000
+GUEST_INIT   := $(BUILD)/init
+GUEST_INITRD := $(BUILD)/initramfs.cpio.gz
+GUEST_DTB    := $(BUILD)/guest.dtb
+
+$(GUEST_INIT): $(GUEST_DIR)/init.c
+	@mkdir -p $(BUILD)
+	@echo "INIT $@"
+	@$(CC) -static -no-pie -nostdlib -nostartfiles -fno-pic -O2 -o $@ $<
+
+$(GUEST_INITRD): $(GUEST_INIT)
+	@echo "INITRD $@"
+	@rm -rf $(BUILD)/initrd && mkdir -p $(BUILD)/initrd/dev
+	@cp $(GUEST_INIT) $(BUILD)/initrd/init && chmod +x $(BUILD)/initrd/init
+	@mknod $(BUILD)/initrd/dev/console c 5 1 2>/dev/null || true
+	@cd $(BUILD)/initrd && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz
+
+$(GUEST_DTB): $(GUEST_DIR)/guest.dts $(GUEST_INITRD)
 	@mkdir -p $(BUILD)
 	@echo "DTC $@"
-	@dtc -I dts -O dtb $(GUEST_DIR)/guest.dts -o $@ 2>/dev/null
+	@sz=$$(stat -c%s $(GUEST_INITRD)); \
+	 end=$$(printf '0x%x' $$(( $(INITRD_ADDR) + sz )) ); \
+	 sed "s|stdout-path = \"/pl011@9000000\";|stdout-path = \"/pl011@9000000\";\n\t\tlinux,initrd-start = <$(INITRD_ADDR)>;\n\t\tlinux,initrd-end = <$$end>;|" \
+	     $(GUEST_DIR)/guest.dts > $(BUILD)/guest.full.dts; \
+	 dtc -I dts -O dtb $(BUILD)/guest.full.dts -o $@ 2>/dev/null
 $(BUILD)/guest_dtb.o: $(GUEST_DTB)
 
 # QEMU: virt machine, GICv3, virtualization extensions ON -> enters at EL2.

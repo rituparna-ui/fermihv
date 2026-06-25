@@ -50,6 +50,7 @@ case "$cmd" in
 			-m 2G -nographic -nic none -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
 			2>&1 || true'
 		;;
 	test)
