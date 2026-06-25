@@ -6,6 +6,7 @@
 #include "gic.h"
 #include "timer.h"
 #include "vgic.h"
+#include "vvirtio.h"
 
 extern void guest_counter_entry(void);
 extern void guest_vuart_entry(void);
@@ -1312,4 +1313,51 @@ void smp_psci_demo(void) {
 	uart_println(got ? "[M22] guest-driven SMP works: primary booted a secondary "
 	                   "core via PSCI and they exchanged an IPI."
 	                 : "[M22] secondary bring-up/IPI not observed.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M23: emulated virtio-console -- a guest prints through a virtqueue   */
+/* ------------------------------------------------------------------ */
+
+void virtio_demo(void) {
+	extern void guest_virtio_entry(void);
+	stage2_init();              /* block1 RAM; block0 (virtio/GIC/UART) unmapped */
+	virtio_reset();
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12); /* RW|VM|DC */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], (uint64_t)&guest_virtio_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+
+	uart_println("[M23] guest drives an EMULATED virtio-console (virtqueue):");
+	uart_puts("      device output> ");
+
+	int done = 0, guard = 0;
+	while (!done && guard++ < 100000) {
+		vcpu_run_once(&vcpus[0]);
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if ((vcpus[0].exit_reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+		if (ec == EC_HVC64) {
+			done = 1;
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (virtio_contains(ipa))
+				virtio_mmio(&vcpus[0], ipa);
+			else
+				mmio_zero(&vcpus[0]);
+		} else {
+			uart_printf("[M23] unexpected exit ec=%x (%s)\n", ec, ec_name(ec));
+			break;
+		}
+	}
+	uart_println("[M23] virtio-console: guest queued a buffer; the hypervisor's "
+	             "device model walked the virtqueue and emitted it.");
 }

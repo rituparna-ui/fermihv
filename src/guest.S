@@ -598,3 +598,52 @@ gpsci_irq:
 
 gpsci_bad:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M23 guest: drives the emulated virtio-console. Builds a 1-descriptor */
+/* split virtqueue pointing at a message, programs the virtio-mmio       */
+/* registers, and notifies -- the hypervisor prints the queued bytes.    */
+/* ------------------------------------------------------------------ */
+.global guest_virtio_entry
+guest_virtio_entry:
+	movz	x10, #0x4002, lsl #16    /* queue page @ guest IPA 0x40020000 */
+	adr	x11, vvmsg               /* message buffer (guest IPA) */
+	/* strlen -> x3 */
+	mov	x3, #0
+1:	ldrb	w0, [x11, x3]
+	cbz	w0, 2f
+	add	x3, x3, #1
+	b	1b
+2:	/* desc[0] = { addr=x11, len=x3, flags=0, next=0 } */
+	str	x11, [x10, #0]
+	str	w3, [x10, #8]
+	str	wzr, [x10, #12]
+	/* avail ring @ +16 (QueueNum=1): flags=0, idx=1, ring[0]=0 */
+	add	x4, x10, #16
+	strh	wzr, [x4, #0]
+	mov	w0, #1
+	strh	w0, [x4, #2]
+	strh	wzr, [x4, #4]
+	dsb	sy
+	/* virtio-mmio handshake @ 0x0A000000 */
+	movz	x5, #0x0A00, lsl #16
+	mov	w0, #4096
+	str	w0, [x5, #0x28]          /* GuestPageSize */
+	str	wzr, [x5, #0x30]         /* QueueSel = 0  */
+	mov	w0, #1
+	str	w0, [x5, #0x38]          /* QueueNum = 1  */
+	mov	w0, #4096
+	str	w0, [x5, #0x3c]          /* QueueAlign    */
+	movz	w0, #0x0004, lsl #16
+	movk	w0, #0x0020             /* PFN = 0x40020 (0x40020000 >> 12) */
+	str	w0, [x5, #0x40]          /* QueuePFN      */
+	mov	w0, #0xF
+	str	w0, [x5, #0x70]          /* Status = ACK|DRIVER|FEATURES_OK|DRIVER_OK */
+	str	wzr, [x5, #0x50]         /* QueueNotify 0 -> device emits the buffer */
+	hvc	#0
+3:	wfi
+	b	3b
+
+	.balign 8
+vvmsg:
+	.asciz	"Hello from a guest, printed through an EMULATED virtio-console device!\n"

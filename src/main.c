@@ -82,6 +82,9 @@ void hv_main(void) {
 	/* M22: guest-driven SMP -- a guest boots its secondary core via PSCI. */
 	smp_psci_demo();
 
+	/* M23: emulated virtio-console -- a guest prints through a virtqueue. */
+	virtio_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();
