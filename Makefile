@@ -85,12 +85,23 @@ $(GUEST_DTB): $(GUEST_DIR)/guest.dts $(GUEST_INITRD)
 	 dtc -I dts -O dtb $(BUILD)/guest.full.dts -o $@ 2>/dev/null
 $(BUILD)/guest_dtb.o: $(GUEST_DTB)
 
+# A persistent ext4 disk for the guest's virtio-blk device. Built once (no
+# prereqs), pre-populated via mke2fs -d so no loopback mount is needed; the
+# guest's writes persist in the image across boots.
+GUEST_DISK := $(BUILD)/disk.img
+$(GUEST_DISK):
+	@mkdir -p $(BUILD)/diskroot
+	@printf 'Hello from a virtio-blk ext4 disk, served by FermiHV!\n' > $(BUILD)/diskroot/HELLO.txt
+	@echo "DISK $@ (32M ext4)"
+	@mke2fs -q -F -t ext4 -d $(BUILD)/diskroot $@ 32M
+disk: $(GUEST_DISK)
+
 # QEMU: virt machine, GICv3, virtualization extensions ON -> enters at EL2.
 QEMU         := qemu-system-aarch64
 QEMU_MACHINE := virt,gic-version=3,virtualization=on
 QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu cortex-a72 -m 2G -nographic -kernel $(TARGET)
 
-.PHONY: all run debug clean
+.PHONY: all run debug clean disk
 all: $(TARGET)
 
 $(TARGET): $(OBJS) linker.ld

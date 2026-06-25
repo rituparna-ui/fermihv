@@ -42,6 +42,25 @@ else
 	echo "[init] no eth0 yet -- available interfaces:"; ls /sys/class/net
 	echo "[init] virtio in dmesg:"; dmesg | grep -i "virtio\|eth0" | head
 fi
+
+echo "--- virtio-blk storage ---"
+if [ -e /dev/vda ]; then
+	mkdir -p /mnt
+	if mount -t ext4 /dev/vda /mnt 2>/dev/null; then
+		echo "mounted /dev/vda (ext4) on /mnt; contents:"
+		ls -la /mnt
+		echo "HELLO.txt: $(cat /mnt/HELLO.txt)"
+		echo "boot at uptime $(cut -d' ' -f1 /proc/uptime)s" >> /mnt/boot.log
+		echo "--- /mnt/boot.log (persists across reboots) ---"
+		cat /mnt/boot.log
+		sync; umount /mnt
+		echo "synced + unmounted virtio-blk disk"
+	else
+		echo "[init] mount of /dev/vda failed"
+	fi
+else
+	echo "[init] no /dev/vda block device"
+fi
 echo "FERMIHV_SHELL_OK"
 echo
 echo "  (interactive: run ./run.sh linux and type; 'poweroff -f' to halt)"

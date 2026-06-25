@@ -28,6 +28,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M8 | **Linux reaches userspace** (PID 1 `/init` via an initramfs) |
 | M9 | **Interactive busybox shell** on the Linux guest |
 | M10 | **Guest networking**: virtio-net + DNS + HTTP over SLIRP NAT |
+| M11 | **Persistent storage**: virtio-blk + ext4, writes survive reboots |
 
 ## Architecture
 

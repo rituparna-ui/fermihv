@@ -52,7 +52,7 @@ case "$cmd" in
 		  chmod +x build/busybox; ls -la build/busybox'
 		;;
 	fetch-modules)
-		echo "[run.sh] staging virtio_net kernel modules -> build/netmods"
+		echo "[run.sh] staging guest kernel modules -> build/netmods"
 		drun bash -c '
 		  set -e
 		  ver=6.12.86+deb13-arm64
@@ -61,59 +61,62 @@ case "$cmd" in
 		  mkdir -p build/_li/lib && ln -sf "$(pwd)/build/_li/usr/lib/modules" build/_li/lib/modules
 		  depmod -b build/_li "$ver"
 		  rm -rf build/netmods && mkdir -p build/netmods; : > build/netmods/order.txt
-		  modprobe -d build/_li -S "$ver" --show-depends virtio_net | while read kind ko rest; do
-		    [ "$kind" = insmod ] || continue
-		    bn=$(basename "${ko%.xz}")
-		    case "$ko" in
-		      *.xz) python3 -c "import lzma,sys;open(sys.argv[2],\"wb\").write(lzma.open(sys.argv[1]).read())" "$ko" "build/netmods/$bn" ;;
-		      *) cp "$ko" "build/netmods/$bn" ;;
-		    esac
-		    echo "$bn" >> build/netmods/order.txt
+		  for target in virtio_net virtio_blk ext4; do
+		    modprobe -d build/_li -S "$ver" --show-depends "$target" | while read kind ko rest; do
+		      [ "$kind" = insmod ] || continue
+		      bn=$(basename "${ko%.xz}")
+		      grep -qx "$bn" build/netmods/order.txt && continue
+		      case "$ko" in
+		        *.xz) python3 -c "import lzma,sys;open(sys.argv[2],\"wb\").write(lzma.open(sys.argv[1]).read())" "$ko" "build/netmods/$bn" ;;
+		        *) cp "$ko" "build/netmods/$bn" ;;
+		      esac
+		      echo "$bn" >> build/netmods/order.txt
+		    done
 		  done
 		  rm -rf build/_li
 		  echo "staged:"; cat build/netmods/order.txt'
 		;;
 	linux)
-		drun make all
+		drun make all && drun make disk
 		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"
 		# -it gives the guest's busybox shell a real terminal on the serial console.
 		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
 			qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
-			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -drive file=build/disk.img,if=none,id=d0,format=raw -device virtio-blk-pci,drive=d0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on
 		;;
 	linux-demo)
 		# Non-interactive: pipe a canned command sequence into the guest shell.
-		drun make all
+		drun make all && drun make disk
 		printf 'uname -a\ncat /proc/cpuinfo | head -6\nls -la /\ncat /proc/interrupts\necho FERMIHV_SHELL_OK\npoweroff -f\n' | \
 		docker run --rm -i -v "$HERE":/work -w /work "$IMAGE" bash -c 'timeout 95 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
-			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -drive file=build/disk.img,if=none,id=d0,format=raw -device virtio-blk-pci,drive=d0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
 			2>&1 || true'
 		;;
 	linux-raw)
-		drun make all
+		drun make all && drun make disk
 		echo "[run.sh] booting FermiHV + Linux guest (captured, ${LINUX_TIMEOUT:-95}s)..."
 		drun bash -c 'timeout 95 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
-			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf \
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -drive file=build/disk.img,if=none,id=d0,format=raw -device virtio-blk-pci,drive=d0 -kernel build/fermihv.elf \
 			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
 			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
 			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
 			2>&1 || true'
 		;;
 	test)
-		drun make all
+		drun make all && drun make disk
 		echo "[run.sh] booting for 8s, capturing serial..."
 		drun bash -c 'timeout 8 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on,highmem=off -cpu cortex-a72 \
-			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -kernel build/fermihv.elf 2>&1 || true'
+			-m 2G -nographic -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -drive file=build/disk.img,if=none,id=d0,format=raw -device virtio-blk-pci,drive=d0 -kernel build/fermihv.elf 2>&1 || true'
 		;;
 	*) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac
