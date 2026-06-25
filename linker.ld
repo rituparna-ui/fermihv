@@ -10,7 +10,11 @@
  */
 ENTRY(_start)
 
-HV_LOAD_ADDR = 0x40000000;
+/* The hypervisor lives high in RAM (0x70000000) so a guest (Linux) can own
+ * the low RAM at 0x40000000 that its load address and DTB memory node
+ * expect. QEMU loads the ELF at its physical link address and enters _start
+ * at EL2. With -m 2G, RAM is 0x40000000..0xBFFFFFFF, so 0x70000000 is valid. */
+HV_LOAD_ADDR = 0x70000000;
 
 PHDRS
 {
