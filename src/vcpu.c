@@ -217,3 +217,70 @@ void virq_demo(int nticks) {
 	hyptimer_stop();
 	uart_printf("[M6b] delivered %u virtual timer ticks to the guest.\n", ticks);
 }
+
+/* ------------------------------------------------------------------ */
+/* M7: load and boot a separately-built guest kernel image            */
+/* ------------------------------------------------------------------ */
+
+extern char nano_image_start[];
+extern char nano_image_end[];
+
+#define GUEST_LOAD_IPA 0x48000000UL   /* where the guest is loaded & linked */
+
+void real_guest_demo(void) {
+	uint64_t size = (uint64_t)(nano_image_end - nano_image_start);
+
+	/* Copy the embedded guest image into guest RAM. Stage-2 maps this IPA
+	 * identity to host RAM (the 0x40000000 1GiB block already covers it). */
+	volatile uint8_t *dst = (volatile uint8_t *)GUEST_LOAD_IPA;
+	const uint8_t *src = (const uint8_t *)nano_image_start;
+	for (uint64_t i = 0; i < size; i++)
+		dst[i] = src[i];
+
+	/* Make the freshly-written instructions visible to the I-side. */
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("ic ialluis");
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("isb");
+
+	uart_printf("[M7] loaded %u-byte guest image -> IPA %x; booting at EL1\n",
+	            size, GUEST_LOAD_IPA);
+
+	vcpu_init(&vcpus[0], GUEST_LOAD_IPA,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), stage2_vttbr(), 0);
+
+	/* HCR_EL2: RW | VM | IMO, but NO DC -- the guest manages its own stage-1
+	 * MMU, which DC=1 would force to appear disabled. */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	for (;;) {
+		vcpu_run_once(&vcpus[0]);
+
+		if ((vcpus[0].exit_reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if (ec == EC_HVC64) {
+			uart_printf("[M7] guest exited via HVC (x0=%x) -> success.\n",
+			            vcpus[0].x[0]);
+			break;
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (ec == EC_DABT_LOW && vuart_contains(ipa))
+				mmio_emulate(&vcpus[0], ipa);
+			else
+				stage2_map_1gb(ipa & ~0x3FFFFFFFUL);
+		} else {
+			uart_printf("[M7] unexpected exit ec=%x (%s) far=%x, stopping\n",
+			            ec, ec_name(ec), vcpus[0].exit_far);
+			break;
+		}
+	}
+}

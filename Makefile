@@ -14,7 +14,7 @@ TARGET  := $(BUILD)/fermihv.elf
 # varargs but only integer/pointer args, so GP regs suffice.
 CFLAGS  := -ffreestanding -nostdlib -nostartfiles -fno-pic -mstrict-align \
            -mgeneral-regs-only -Wall -Wextra -O2 -g -MMD -MP -Isrc
-ASFLAGS := -ffreestanding -nostdlib -nostartfiles -fno-pic -g -MMD -MP -Isrc
+ASFLAGS := -ffreestanding -nostdlib -nostartfiles -fno-pic -g -MMD -MP -Isrc -I.
 LDFLAGS := -nostdlib -T linker.ld
 
 C_SRCS  := $(wildcard src/*.c)
@@ -22,6 +22,23 @@ S_SRCS  := $(wildcard src/*.S)
 OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(C_SRCS)) \
            $(patsubst src/%.S,$(BUILD)/%.o,$(S_SRCS))
 DEPS    := $(OBJS:.o=.d)
+
+# --- standalone guest kernel ("nano"), built as its own image and embedded
+# into the hypervisor via src/guest_image.S (.incbin). ---
+GUEST_DIR   := guest
+GUEST_BIN   := $(BUILD)/nano.bin
+GUEST_FLAGS := -ffreestanding -nostdlib -nostartfiles -fno-pic -mstrict-align \
+               -mgeneral-regs-only -O2 -g -Wl,--no-warn-rwx-segments
+
+$(GUEST_BIN): $(GUEST_DIR)/nano_boot.S $(GUEST_DIR)/nano.c $(GUEST_DIR)/nano.ld
+	@mkdir -p $(BUILD)
+	@echo "GUEST $@"
+	@$(CC) $(GUEST_FLAGS) -Wl,-T,$(GUEST_DIR)/nano.ld -o $(BUILD)/nano.elf \
+		$(GUEST_DIR)/nano_boot.S $(GUEST_DIR)/nano.c
+	@$(CROSS)objcopy -O binary $(BUILD)/nano.elf $@
+
+# guest_image.S incbin's the guest binary, so it must exist first.
+$(BUILD)/guest_image.o: $(GUEST_BIN)
 
 # QEMU: virt machine, GICv3, virtualization extensions ON -> enters at EL2.
 QEMU         := qemu-system-aarch64
