@@ -36,12 +36,28 @@ case "$cmd" in
 	run)       drun make run ;;
 	debug)     drun make debug ;;
 	shell)     docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" bash ;;
+	fetch-linux)
+		echo "[run.sh] fetching a prebuilt arm64 Linux Image -> build/Image"
+		drun bash -c 'mkdir -p build && wget -q -O build/Image \
+		  http://deb.debian.org/debian/dists/stable/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux \
+		  && ls -la build/Image'
+		;;
+	linux)
+		drun make all
+		echo "[run.sh] booting FermiHV + Linux guest (image+dtb via loader)..."
+		drun bash -c 'timeout 95 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
+			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
+			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
+			2>&1 || true'
+		;;
 	test)
 		drun make all
 		echo "[run.sh] booting for 8s, capturing serial..."
 		drun bash -c 'timeout 8 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 2G -nographic -kernel build/fermihv.elf 2>&1 || true'
+			-m 2G -nographic -nic none -kernel build/fermihv.elf 2>&1 || true'
 		;;
 	*) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac

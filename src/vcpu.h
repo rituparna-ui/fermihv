@@ -66,4 +66,7 @@ void virq_demo(int nticks);
 /* M7 demo: load a separately-built guest kernel image and boot it at EL1. */
 void real_guest_demo(void);
 
+/* M7: boot a real Linux kernel (image+DTB placed in RAM by the loader). */
+void linux_boot(void);
+
 #endif /* FERMIHV_VCPU_H */

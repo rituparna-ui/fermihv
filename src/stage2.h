@@ -12,6 +12,9 @@ void stage2_init(void);
  * blocks on demand from the data/instruction abort handler. */
 void stage2_map_1gb(uint64_t ipa);
 
+/* Identity-map one 1GiB block as Device-nGnRnE for MMIO passthrough. */
+void stage2_map_1gb_device(uint64_t ipa);
+
 /* Base address of the stage-2 level-1 table, for loading into VTTBR_EL2
  * (VMID 0). */
 uint64_t stage2_vttbr(void);

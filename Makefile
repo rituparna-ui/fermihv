@@ -40,6 +40,14 @@ $(GUEST_BIN): $(GUEST_DIR)/nano_boot.S $(GUEST_DIR)/nano.c $(GUEST_DIR)/nano.ld
 # guest_image.S incbin's the guest binary, so it must exist first.
 $(BUILD)/guest_image.o: $(GUEST_BIN)
 
+# Guest device tree blob, compiled from the checked-in source.
+GUEST_DTB := $(BUILD)/guest.dtb
+$(GUEST_DTB): $(GUEST_DIR)/guest.dts
+	@mkdir -p $(BUILD)
+	@echo "DTC $@"
+	@dtc -I dts -O dtb $(GUEST_DIR)/guest.dts -o $@ 2>/dev/null
+$(BUILD)/guest_dtb.o: $(GUEST_DTB)
+
 # QEMU: virt machine, GICv3, virtualization extensions ON -> enters at EL2.
 QEMU         := qemu-system-aarch64
 QEMU_MACHINE := virt,gic-version=3,virtualization=on

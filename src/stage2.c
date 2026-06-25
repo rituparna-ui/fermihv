@@ -26,6 +26,10 @@
  */
 #define S2_BLOCK_NORMAL 0x7FDUL
 
+/* Device-nGnRnE stage-2 block: MemAttr[5:2]=0, S2AP[7:6]=11 (RW), AF[10]=1,
+ * SH=0, block descriptor. Used to pass through MMIO (GIC, UART, ...). */
+#define S2_BLOCK_DEVICE 0x4C1UL
+
 /* The level-1 stage-2 table. 512 entries * 8 bytes = one 4KiB page. */
 static uint64_t s2_l1[512] __attribute__((aligned(4096)));
 
@@ -57,4 +61,13 @@ void stage2_init(void) {
 
 uint64_t stage2_vttbr(void) {
 	return (uint64_t)s2_l1; /* VMID 0 in bits[63:48] */
+}
+
+void stage2_map_1gb_device(uint64_t ipa) {
+	uint64_t idx = (ipa >> 30) & 0x1FF;
+	s2_l1[idx] = (ipa & ~0x3FFFFFFFUL) | S2_BLOCK_DEVICE;
+	__asm__ volatile("dsb ish");
+	__asm__ volatile("tlbi vmalls12e1");
+	__asm__ volatile("dsb ish");
+	__asm__ volatile("isb");
 }

@@ -68,5 +68,9 @@ void hv_main(void) {
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();
 
+	/* M7 (goal): boot a real Linux kernel. Only meaningful when QEMU's
+	 * generic loader has placed an Image + DTB in RAM (./run.sh linux). */
+	linux_boot();
+
 	uart_println("[HV] Done. Parking CPU.");
 }

@@ -284,3 +284,108 @@ void real_guest_demo(void) {
 		}
 	}
 }
+
+/* ------------------------------------------------------------------ */
+/* M7: boot a real Linux kernel as a guest                            */
+/* ------------------------------------------------------------------ */
+
+/* QEMU's generic loader places these in guest RAM before we run. */
+#define LINUX_LOAD_IPA 0x41000000UL   /* 2 MiB-aligned kernel load address */
+#define LINUX_DTB_IPA  0x48000000UL   /* device tree blob                  */
+
+/* Minimal PSCI (SMC/HVC conduit) so Linux's CPU/power calls don't fault. */
+static void psci_handle(vcpu_t *v) {
+	uint32_t fn = (uint32_t)v->x[0];
+	switch (fn) {
+	case 0x84000000:                 /* PSCI_VERSION */
+		v->x[0] = 0x00010000;        /* v1.0 */
+		break;
+	case 0x84000008:                 /* SYSTEM_OFF */
+		uart_println("[PSCI] SYSTEM_OFF -> halting guest");
+		v->halted = 1;
+		break;
+	case 0x84000009:                 /* SYSTEM_RESET */
+		uart_println("[PSCI] SYSTEM_RESET -> halting guest");
+		v->halted = 1;
+		break;
+	case 0xC4000003:                 /* CPU_ON (64-bit): single vCPU only */
+	case 0x84000003:
+		v->x[0] = (uint64_t)-2;      /* INVALID_PARAMETERS */
+		break;
+	default:
+		v->x[0] = (uint64_t)-1;      /* NOT_SUPPORTED */
+		break;
+	}
+}
+
+void linux_boot(void) {
+	stage2_init();                       /* VTCR + Normal RAM block @0x40000000 */
+	stage2_map_1gb_device(0x0UL);        /* passthrough GIC/UART/ITS (block 0)  */
+
+	/* Let EL1 use the physical timer/counter directly; zero virtual offset. */
+	wr_sysreg("cnthctl_el2", 3UL);       /* EL1PCTEN | EL1PCEN */
+	wr_sysreg("cntvoff_el2", 0UL);
+
+	vcpu_init(&vcpus[0], LINUX_LOAD_IPA, 0, stage2_vttbr(), 0);
+	/* arm64 boot protocol: x0 = DTB phys, x1..x3 = 0. */
+	vcpus[0].x[0] = LINUX_DTB_IPA;
+	vcpus[0].x[1] = 0;
+	vcpus[0].x[2] = 0;
+	vcpus[0].x[3] = 0;
+
+	/* HCR_EL2: RW | VM | TSC (trap guest SMC for PSCI). No DC (guest owns its
+	 * MMU), no IMO (guest drives the real GICv3 and takes its own IRQs). */
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 19);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	uart_println("[M7] booting Linux at EL1 (x0=DTB). Kernel output follows:");
+	uart_println("------------------------------------------------------------");
+
+	/* Place our DTB (768 MiB memory node + earlycon bootargs) at the address
+	 * we hand Linux in x0. QEMU's generic loader placed the kernel Image. */
+	extern char guest_dtb_start[], guest_dtb_end[];
+	uint64_t dtb_sz = (uint64_t)(guest_dtb_end - guest_dtb_start);
+	volatile uint8_t *dd = (volatile uint8_t *)LINUX_DTB_IPA;
+	for (uint64_t i = 0; i < dtb_sz; i++)
+		dd[i] = ((uint8_t *)guest_dtb_start)[i];
+	__asm__ volatile("dsb sy");
+
+	uint32_t img_magic = *(volatile uint32_t *)(LINUX_LOAD_IPA + 56);
+	uint32_t dtb_magic = *(volatile uint32_t *)(LINUX_DTB_IPA);
+	uart_printf("[M7] image_magic=%x dtb_magic=%x dtb_size=%u\n",
+	            (uint64_t)img_magic, (uint64_t)dtb_magic, dtb_sz);
+
+	for (;;) {
+		vcpu_run_once(&vcpus[0]);
+		if (vcpus[0].halted)
+			break;
+
+		uint64_t reason = vcpus[0].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+
+		if ((reason & 3) == 1) {            /* stray physical IRQ at EL2 */
+			uint64_t iar = gic_ack();
+			if ((iar & 0xFFFFFF) < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+			continue;
+		}
+
+		if (ec == EC_SMC64) {
+			psci_handle(&vcpus[0]);
+			vcpus[0].pc += 4;           /* trapped SMC: advance past it */
+		} else if (ec == EC_HVC64) {
+			psci_handle(&vcpus[0]);     /* HVC conduit fallback */
+		} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			stage2_map_1gb(ipa & ~0x3FFFFFFFUL); /* fault-in more RAM */
+		} else {
+			uart_printf("\n[M7] guest trap ec=%x (%s) far=%x elr=%x -- stopping\n",
+			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			break;
+		}
+	}
+	uart_println("------------------------------------------------------------");
+	uart_println("[M7] Linux guest run ended.");
+}
