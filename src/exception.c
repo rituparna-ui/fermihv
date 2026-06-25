@@ -1,6 +1,8 @@
 #include "exception.h"
 #include "uart.h"
 #include "stage2.h"
+#include "gic.h"
+#include "timer.h"
 
 extern char el2_vector_table[];
 
@@ -39,6 +41,22 @@ void exceptions_init(void) {
 }
 
 void el2_exception_dispatch(uint64_t vector_index, struct el2_frame *f) {
+	/* vector_index & 3: 0=sync, 1=irq, 2=fiq, 3=serror. */
+	if ((vector_index & 3) == 1) {
+		uint64_t iar = gic_ack();
+		uint32_t intid = iar & 0xFFFFFF;
+		if (intid == HYP_TIMER_PPI) {
+			hyptimer_on_irq();
+			uart_printf("[IRQ] EL2 timer tick #%u (intid=%u)\n",
+			            hyptimer_ticks(), (uint64_t)intid);
+		} else if (intid < GIC_SPURIOUS_INTID) {
+			uart_printf("[IRQ] unexpected intid=%u\n", (uint64_t)intid);
+		}
+		if (intid < GIC_SPURIOUS_INTID)
+			gic_eoi(iar);
+		return;
+	}
+
 	uint64_t ec = ESR_EC(f->esr);
 
 	uart_printf("[EL2-EXC] %s idx=%u ec=%x (%s) iss=%x\n",

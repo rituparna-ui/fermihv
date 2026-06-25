@@ -1,6 +1,9 @@
 #include "uart.h"
 #include "exception.h"
 #include "vcpu.h"
+#include "gic.h"
+#include "timer.h"
+#include "mmio.h"
 #include <stdint.h>
 
 static inline uint64_t read_currentel(void) {
@@ -36,5 +39,27 @@ void hv_main(void) {
 	uart_println("[HV] Starting vCPU scheduler...");
 	sched_demo();
 
-	uart_println("[HV] Scheduler returned. Parking CPU.");
+	/* M6a: take a real timer interrupt at EL2 via the GICv3. */
+	uart_println("[M6a] EL2 physical timer interrupts via GICv3:");
+	gic_init_el2();
+	hyptimer_init();
+
+	/* Route physical IRQs to EL2 (HCR_EL2.IMO). Without this they target
+	 * EL1 and, since we execute at EL2, are never taken (just stay pending). */
+	uint64_t hcr;
+	__asm__ volatile("mrs %0, hcr_el2" : "=r"(hcr));
+	hcr |= (1UL << 4); /* IMO */
+	__asm__ volatile("msr hcr_el2, %0" ::"r"(hcr));
+	__asm__ volatile("isb");
+
+	hyptimer_start(100); /* 100 ms */
+	__asm__ volatile("msr daifclr, #2"); /* unmask IRQ at EL2 */
+	while (hyptimer_ticks() < 5)
+		__asm__ volatile("wfi");
+	__asm__ volatile("msr daifset, #2"); /* mask IRQ */
+	hyptimer_stop();
+	uart_printf("[M6a] received %u EL2 timer ticks; IRQ plumbing works.\n",
+	            hyptimer_ticks());
+
+	uart_println("[HV] Done. Parking CPU.");
 }
