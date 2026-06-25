@@ -2,8 +2,10 @@
 #include "uart.h"
 #include "stage2.h"
 #include "exception.h"
+#include "vdev.h"
 
-extern void guest_entry(void);
+extern void guest_counter_entry(void);
+extern void guest_vuart_entry(void);
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -77,14 +79,52 @@ void vcpu_run_once(vcpu_t *v) {
 }
 
 /* ------------------------------------------------------------------ */
-/* M4 demo scheduler                                                  */
+/* Scheduler                                                          */
 /* ------------------------------------------------------------------ */
 
-#define NUM_VCPUS 2
-#define HVC_BUDGET 3            /* hypercalls each vCPU makes before halting */
+#define MAX_VCPUS 2
 
-static vcpu_t vcpus[NUM_VCPUS];
-static uint8_t gstack[NUM_VCPUS][4096] __attribute__((aligned(16)));
+static vcpu_t vcpus[MAX_VCPUS];
+static uint8_t gstack[MAX_VCPUS][4096] __attribute__((aligned(16)));
+
+/* Run `n` vCPUs round-robin until each has made `budget` hypercalls. Guest
+ * exits are decoded here: HVC is logged, stage-2 aborts are either emulated
+ * (if they hit a virtual device) or faulted-in as RAM and retried. */
+static void run_vcpus(int n, int budget, const char *tag) {
+	int hcalls[MAX_VCPUS] = {0};
+	int active = n;
+
+	while (active) {
+		for (int i = 0; i < n; i++) {
+			vcpu_t *v = &vcpus[i];
+			if (v->halted)
+				continue;
+
+			vcpu_run_once(v);
+
+			uint64_t ec = ESR_EC(v->exit_esr);
+			if (ec == EC_HVC64) {
+				uart_printf("[%s] vCPU %d HVC, x0=%u\n", tag, v->id, v->x[0]);
+				if (++hcalls[i] >= budget) {
+					v->halted = 1;
+					active--;
+				}
+			} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
+				uint64_t ipa = ((v->exit_hpfar >> 4) << 12) |
+				               (v->exit_far & 0xFFF);
+				if (ec == EC_DABT_LOW && vuart_contains(ipa))
+					mmio_emulate(v, ipa);            /* device: emulate + advance */
+				else
+					stage2_map_1gb(ipa & ~0x3FFFFFFFUL); /* RAM: fault-in + retry */
+			} else {
+				uart_printf("[%s] vCPU %d unexpected exit ec=%x (%s), halting\n",
+				            tag, v->id, ec, ec_name(ec));
+				v->halted = 1;
+				active--;
+			}
+		}
+	}
+}
 
 void sched_demo(void) {
 	stage2_init();
@@ -95,44 +135,20 @@ void sched_demo(void) {
 	__asm__ volatile("isb");
 
 	uint64_t vttbr = stage2_vttbr();
-	uint64_t entry = (uint64_t)&guest_entry;
-	for (int i = 0; i < NUM_VCPUS; i++)
-		vcpu_init(&vcpus[i], entry,
+
+	/* Phase 1 (M4): two counting vCPUs with independent preserved state. */
+	uart_println("[M4] two counting vCPUs, round-robin (3 hypercalls each):");
+	for (int i = 0; i < 2; i++)
+		vcpu_init(&vcpus[i], (uint64_t)&guest_counter_entry,
 		          (uint64_t)(gstack[i] + sizeof(gstack[i])), vttbr, i);
+	run_vcpus(2, 3, "M4");
 
-	uart_println("[M4] scheduler: 2 vCPUs, round-robin, independent state");
+	/* Phase 2 (M5): one vCPU printing through an emulated MMIO UART. */
+	uart_println("[M5] one vCPU printing via emulated MMIO UART:");
+	uart_puts("      guest says> ");
+	vcpu_init(&vcpus[0], (uint64_t)&guest_vuart_entry,
+	          (uint64_t)(gstack[0] + sizeof(gstack[0])), vttbr, 0);
+	run_vcpus(1, 1, "M5");
 
-	int hcalls[NUM_VCPUS] = {0};
-	int active = NUM_VCPUS;
-	while (active) {
-		for (int i = 0; i < NUM_VCPUS; i++) {
-			vcpu_t *v = &vcpus[i];
-			if (v->halted)
-				continue;
-
-			vcpu_run_once(v);
-
-			uint64_t ec = ESR_EC(v->exit_esr);
-			if (ec == EC_HVC64) {
-				uart_printf("[M4] vCPU %d hvc #%d -> guest counter x0=%u\n",
-				            v->id, hcalls[i] + 1, v->x[0]);
-				if (++hcalls[i] >= HVC_BUDGET) {
-					v->halted = 1;
-					active--;
-					uart_printf("[M4] vCPU %d reached budget, halting\n",
-					            v->id);
-				}
-			} else if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
-				uint64_t ipa = (v->exit_hpfar >> 4) << 12;
-				stage2_map_1gb(ipa & ~0x3FFFFFFFUL); /* fault-in, retry */
-			} else {
-				uart_printf("[M4] vCPU %d unexpected exit ec=%x (%s), halting\n",
-				            v->id, ec, ec_name(ec));
-				v->halted = 1;
-				active--;
-			}
-		}
-	}
-
-	uart_println("[M4] all vCPUs halted; scheduler done.");
+	uart_println("[SCHED] all vCPUs halted; demo done.");
 }
