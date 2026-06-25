@@ -1,5 +1,6 @@
 #include "vm.h"
 #include "uart.h"
+#include "stage2.h"
 #include <stdint.h>
 
 /* Guest EL1 stack (shared physical RAM for now; isolated via stage-2 in M3). */
@@ -15,12 +16,18 @@ void vm_run_guest(void) {
 	uint64_t entry = (uint64_t)&guest_entry;
 	uint64_t sp = (uint64_t)(guest_stack + sizeof(guest_stack));
 
+	/* Bring up stage-2 translation before enabling HCR_EL2.VM. */
+	stage2_init();
+
 	uart_printf("[M2] entering guest at EL1: entry=%x sp_el1=%x\n", entry, sp);
 
 	__asm__ volatile(
-		/* HCR_EL2.RW = 1  -> EL1 executes in AArch64 (stage-2 still off) */
+		/* HCR_EL2: RW (EL1=AArch64) | VM (stage-2 on) | DC (default
+		 * cacheable, so the guest's MMU-off accesses are Normal memory). */
 		"mov   x9, #1\n"
-		"lsl   x9, x9, #31\n"
+		"lsl   x9, x9, #31\n"      /* RW (bit 31) */
+		"orr   x9, x9, #(1 << 0)\n"   /* VM */
+		"orr   x9, x9, #(1 << 12)\n"  /* DC */
 		"msr   hcr_el2, x9\n"
 		/* guest stack + return state */
 		"msr   sp_el1, %[sp]\n"

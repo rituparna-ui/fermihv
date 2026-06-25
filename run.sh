@@ -41,7 +41,7 @@ case "$cmd" in
 		echo "[run.sh] booting for 8s, capturing serial..."
 		drun bash -c 'timeout 8 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
-			-m 1G -nographic -kernel build/fermihv.elf 2>&1 || true'
+			-m 2G -nographic -kernel build/fermihv.elf 2>&1 || true'
 		;;
 	*) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac

@@ -26,7 +26,7 @@ DEPS    := $(OBJS:.o=.d)
 # QEMU: virt machine, GICv3, virtualization extensions ON -> enters at EL2.
 QEMU         := qemu-system-aarch64
 QEMU_MACHINE := virt,gic-version=3,virtualization=on
-QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu cortex-a72 -m 1G -nographic -kernel $(TARGET)
+QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu cortex-a72 -m 2G -nographic -kernel $(TARGET)
 
 .PHONY: all run debug clean
 all: $(TARGET)

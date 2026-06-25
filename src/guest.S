@@ -14,5 +14,14 @@ guest_entry:
 	mov	x0, #0x2222
 	hvc	#0
 
+	/* M3: read an unmapped IPA (0x80000000). With stage-2 enabled this
+	 * faults to EL2 (data abort, EC=0x24); the hypervisor faults the 1GiB
+	 * block in on demand and returns WITHOUT advancing ELR, so this same
+	 * load is retried and now succeeds. */
+	movz	x1, #0x8000, lsl #16     /* x1 = 0x80000000 */
+	ldr	x2, [x1]
+	mov	x0, #0x3333              /* survived the stage-2 fault-in */
+	hvc	#0
+
 1:	wfi
 	b	1b

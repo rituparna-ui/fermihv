@@ -1,5 +1,6 @@
 #include "exception.h"
 #include "uart.h"
+#include "stage2.h"
 
 extern char el2_vector_table[];
 
@@ -52,6 +53,22 @@ void el2_exception_dispatch(uint64_t vector_index, struct el2_frame *f) {
 		uart_printf("          HVC #%x from guest, x0=%x -> handled, resuming\n",
 		            ESR_ISS(f->esr) & 0xFFFF, f->x[0]);
 		return;
+	case EC_DABT_LOW:
+	case EC_IABT_LOW: {
+		/* Stage-2 abort from the guest. HPFAR_EL2 carries the faulting IPA
+		 * (bits[39:4] = IPA[47:12]); FAR_EL2 has the guest VA. Fault in the
+		 * containing 1GiB block and retry (do NOT advance ELR). */
+		uint64_t hpfar;
+		__asm__ volatile("mrs %0, hpfar_el2" : "=r"(hpfar));
+		uint64_t ipa = (hpfar >> 4) << 12;
+		uint64_t base = ipa & ~0x3FFFFFFFUL;
+		uart_printf("          stage-2 %s: guest_va=%x ipa=%x\n",
+		            ec == EC_DABT_LOW ? "data-abort" : "insn-abort",
+		            f->far, ipa);
+		uart_printf("          faulting in 1GiB block @%x and retrying\n", base);
+		stage2_map_1gb(base);
+		return;
+	}
 	case EC_BRK:
 		/* Software breakpoint: skip the 4-byte BRK and resume. This proves
 		 * the full save -> decode -> mutate-frame -> restore -> eret loop. */
