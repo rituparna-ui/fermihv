@@ -42,9 +42,42 @@ case "$cmd" in
 		  http://deb.debian.org/debian/dists/stable/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux \
 		  && ls -la build/Image'
 		;;
+	fetch-busybox)
+		echo "[run.sh] fetching static arm64 busybox -> build/busybox"
+		drun bash -c 'set -e; base=http://deb.debian.org/debian/pool/main/b/busybox/; \
+		  deb=$(wget -qO- "$base" | grep -oE "busybox-static_[^\"]*_arm64\.deb" | sort -u | tail -1); \
+		  wget -q -O /tmp/bb.deb "$base$deb"; rm -rf /tmp/bbx; mkdir -p /tmp/bbx; \
+		  dpkg-deb -x /tmp/bb.deb /tmp/bbx; mkdir -p build; \
+		  cp "$(find /tmp/bbx -path "*bin/busybox" -type f | head -1)" build/busybox; \
+		  chmod +x build/busybox; ls -la build/busybox'
+		;;
 	linux)
 		drun make all
-		echo "[run.sh] booting FermiHV + Linux guest (image+dtb via loader)..."
+		echo "[run.sh] booting FermiHV + Linux guest (interactive; Ctrl-A X to quit)"
+		# -it gives the guest's busybox shell a real terminal on the serial console.
+		docker run --rm -it -v "$HERE":/work -w /work "$IMAGE" \
+			qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
+			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
+			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on
+		;;
+	linux-demo)
+		# Non-interactive: pipe a canned command sequence into the guest shell.
+		drun make all
+		printf 'uname -a\ncat /proc/cpuinfo | head -6\nls -la /\ncat /proc/interrupts\necho FERMIHV_SHELL_OK\npoweroff -f\n' | \
+		docker run --rm -i -v "$HERE":/work -w /work "$IMAGE" bash -c 'timeout 95 qemu-system-aarch64 \
+			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
+			-m 2G -nographic -nic none -kernel build/fermihv.elf \
+			-device loader,file=build/Image,addr=0x41000000,force-raw=on \
+			-device loader,file=build/guest.dtb,addr=0x48000000,force-raw=on \
+			-device loader,file=build/initramfs.cpio.gz,addr=0x4c000000,force-raw=on \
+			2>&1 || true'
+		;;
+	linux-raw)
+		drun make all
+		echo "[run.sh] booting FermiHV + Linux guest (captured, ${LINUX_TIMEOUT:-95}s)..."
 		drun bash -c 'timeout 95 qemu-system-aarch64 \
 			-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 \
 			-m 2G -nographic -nic none -kernel build/fermihv.elf \

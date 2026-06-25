@@ -53,11 +53,20 @@ $(GUEST_INIT): $(GUEST_DIR)/init.c
 	@echo "INIT $@"
 	@$(CC) -static -no-pie -nostdlib -nostartfiles -fno-pic -O2 -o $@ $<
 
-$(GUEST_INITRD): $(GUEST_INIT)
+$(GUEST_INITRD): $(GUEST_INIT) $(GUEST_DIR)/init.sh
 	@echo "INITRD $@"
-	@rm -rf $(BUILD)/initrd && mkdir -p $(BUILD)/initrd/dev
-	@cp $(GUEST_INIT) $(BUILD)/initrd/init && chmod +x $(BUILD)/initrd/init
+	@rm -rf $(BUILD)/initrd
+	@mkdir -p $(BUILD)/initrd/dev $(BUILD)/initrd/bin $(BUILD)/initrd/proc $(BUILD)/initrd/sys
 	@mknod $(BUILD)/initrd/dev/console c 5 1 2>/dev/null || true
+	@if [ -f $(BUILD)/busybox ]; then \
+		cp $(BUILD)/busybox $(BUILD)/initrd/bin/busybox; \
+		ln -sf busybox $(BUILD)/initrd/bin/sh; \
+		cp $(GUEST_DIR)/init.sh $(BUILD)/initrd/init; chmod +x $(BUILD)/initrd/init; \
+		echo "  (initramfs: interactive busybox shell)"; \
+	else \
+		cp $(GUEST_INIT) $(BUILD)/initrd/init; chmod +x $(BUILD)/initrd/init; \
+		echo "  (initramfs: static heartbeat init -- run ./run.sh fetch-busybox for a shell)"; \
+	fi
 	@cd $(BUILD)/initrd && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz
 
 $(GUEST_DTB): $(GUEST_DIR)/guest.dts $(GUEST_INITRD)

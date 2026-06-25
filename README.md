@@ -26,6 +26,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M7 | Load an external guest image; guest runs its own stage-1 MMU |
 | M7 (goal) | **Boot a real Linux kernel** (device passthrough + DTB + PSCI) |
 | M8 | **Linux reaches userspace** (PID 1 `/init` via an initramfs) |
+| M9 | **Interactive busybox shell** on the Linux guest |
 
 ## Architecture
 
@@ -57,7 +58,11 @@ Requires Docker; the build runs in a container snapshotted from `osdev`
 ./run.sh build          # compile
 ./run.sh test           # boot M0..M7 demos for 8s and print serial
 ./run.sh fetch-linux    # download a prebuilt arm64 Linux Image (once)
-./run.sh linux          # boot FermiHV + the Linux guest
+./run.sh fetch-busybox  # download a static arm64 busybox (once, for a shell)
+./run.sh linux          # boot Linux + interactive busybox shell (Ctrl-A X to quit)
+./run.sh linux-raw      # same, captured non-interactively (8s+ serial dump)
 ```
 
-`build/Image` (the Linux kernel) is fetched separately and not committed.
+`build/Image` (Linux kernel) and `build/busybox` are fetched separately and
+not committed. With busybox present the initramfs gives an interactive shell;
+without it, a tiny static heartbeat `/init` is used instead.
