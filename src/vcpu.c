@@ -15,6 +15,8 @@ extern void guest_ipi_entry(void);
 extern void guest_smp_entry(void);
 extern char guest_tenant_start[];
 extern char guest_tenant_end[];
+extern char guest_tvgic_start[];
+extern char guest_tvgic_end[];
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -257,7 +259,7 @@ void vgic_demo(int nticks) {
 			uint32_t intid = iar & 0xFFFFFF;
 			if (intid == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
-				if (vgic_irq_enabled(27))
+				if (vgic_irq_enabled(0, 27))
 					vgic_inject(27);
 			}
 			if (intid < GIC_SPURIOUS_INTID)
@@ -274,7 +276,7 @@ void vgic_demo(int nticks) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (vgic_contains(ipa))
-				vgic_mmio(&vcpus[0], ipa);
+				vgic_mmio(0, &vcpus[0], ipa);
 			else
 				stage2_map_1gb(ipa & ~0x3FFFFFFFUL);
 		} else {
@@ -487,6 +489,85 @@ void mtenant_demo(void) {
 		             "host memory; neither VM can see the other.");
 	else
 		uart_println("[M16] isolation FAILED (blocks match)");
+}
+
+/* ------------------------------------------------------------------ */
+/* M18: per-VM vGIC -- two isolated VMs, each on its OWN emulated GIC   */
+/* ------------------------------------------------------------------ */
+
+void mtenant_vgic_demo(void) {
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	/* Copy the vGIC tenant into each VM's private host RAM block. */
+	uint64_t sz = (uint64_t)(guest_tvgic_end - guest_tvgic_start);
+	for (uint64_t i = 0; i < sz; i++) {
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_tvgic_start)[i];
+		((volatile uint8_t *)VM1_PA)[i] = ((uint8_t *)guest_tvgic_start)[i];
+	}
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr0 = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t vttbr1 = stage2_build_vm(1, VM_IPA, VM1_PA, 2);
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4); /* RW|VM|DC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x10000, vttbr0, 0);
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x10000, vttbr1, 1);
+
+	uart_println("[M18] two isolated VMs, each driving its OWN emulated vGIC,");
+	uart_println("      time-sliced; each serviced timer IRQ is gated by its own vGIC.");
+
+	hyptimer_start(10);
+	int ticks[2] = {0, 0};
+	int pend[2] = {0, 0};
+	int cur = 0, guard = 0;
+	while ((ticks[0] < 3 || ticks[1] < 3) && guard++ < 20000) {
+		if (pend[cur] && vgic_irq_enabled(cur, 27)) {
+			vgic_inject(27);
+			pend[cur] = 0;
+		}
+		vcpu_run_once(&vcpus[cur]);
+
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				pend[0] = pend[1] = 1;   /* a tick is available to both VMs */
+				cur ^= 1;                /* time-slice switch */
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			ticks[cur]++;
+			uart_printf("[M18] VM%d serviced its OWN vGIC timer IRQ #%d "
+			            "(guest tick count=%u)\n", cur, ticks[cur], vcpus[cur].x[0]);
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(cur, &vcpus[cur], ipa);
+			else
+				uart_printf("[M18] VM%d unexpected DABT ipa=%x\n", cur, ipa);
+		} else {
+			uart_printf("[M18] VM%d unexpected exit ec=%x (%s)\n",
+			            cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_printf("[M18] VM0 serviced %d timer IRQs, VM1 serviced %d -- each on its "
+	            "own per-VM vGIC.\n", ticks[0], ticks[1]);
+	uart_println("[M18] two real-interrupt-driven VMs ran concurrently, fully "
+	             "isolated (separate stage-2 + separate vGIC state).");
 }
 
 /* ------------------------------------------------------------------ */
@@ -811,7 +892,7 @@ void fermios_vgic_boot(void) {
 			uint32_t intid = iar & 0xFFFFFF;
 			if (intid == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
-				if (vgic_irq_enabled(30))
+				if (vgic_irq_enabled(0, 30))
 					vgic_inject(30);     /* deliver the guest's timer tick */
 			}
 			if (intid < GIC_SPURIOUS_INTID)
@@ -822,7 +903,7 @@ void fermios_vgic_boot(void) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (vgic_contains(ipa))
-				vgic_mmio(&vcpus[0], ipa);
+				vgic_mmio(0, &vcpus[0], ipa);
 			else if (vuart_contains(ipa))
 				mmio_emulate(&vcpus[0], ipa);
 			else

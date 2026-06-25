@@ -75,6 +75,9 @@ void smp_sched_demo(void);
 /* M16 demo: two isolated VMs running concurrently (multi-tenancy). */
 void mtenant_demo(void);
 
+/* M18 demo: two isolated VMs each on its OWN per-VM emulated vGIC. */
+void mtenant_vgic_demo(void);
+
 /* M7 demo: load a separately-built guest kernel image and boot it at EL1. */
 void real_guest_demo(void);
 

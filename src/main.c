@@ -76,6 +76,9 @@ void hv_main(void) {
 	/* M16: multi-tenancy -- two isolated VMs running concurrently. */
 	mtenant_demo();
 
+	/* M18: per-VM vGIC -- two isolated VMs each on its own emulated GIC. */
+	mtenant_vgic_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();

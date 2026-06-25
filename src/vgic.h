@@ -19,13 +19,12 @@ int vgic_contains(uint64_t ipa);
 /* Reset emulated vGIC state. */
 void vgic_reset(void);
 
-/* Emulate the trapped guest GIC MMIO access (decodes ESR_EL2.ISS), then
- * advance the guest PC past it. */
-void vgic_mmio(vcpu_t *v, uint64_t ipa);
+/* Emulate the trapped guest GIC MMIO access for VM `vm` (decodes
+ * ESR_EL2.ISS), then advance the guest PC past it. */
+void vgic_mmio(int vm, vcpu_t *v, uint64_t ipa);
 
-/* Has the guest enabled this INTID (SGI/PPI) in the emulated GIC? Used to gate
- * virtual interrupt injection. */
-int vgic_irq_enabled(uint32_t intid);
+/* Has VM `vm`'s guest enabled this INTID (SGI/PPI) in its emulated GIC? */
+int vgic_irq_enabled(int vm, uint32_t intid);
 
 /* --- virtual SGIs (inter-processor interrupts) --- */
 #define VGIC_MAX_VCPUS 4
