@@ -159,6 +159,12 @@ void vblk_peek(char *out, int n) {
 		out[i] = (char)vblk_disk[i];
 }
 
+/* Pre-load `n` bytes into sector 0 (hypervisor seeds the disk). */
+void vblk_poke(const char *in, int n) {
+	for (int i = 0; i < n; i++)
+		vblk_disk[i] = (uint8_t)in[i];
+}
+
 static void vblk_process(void) {
 	if (!b_queue_pfn || !b_queue_num)
 		return;

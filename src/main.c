@@ -91,6 +91,9 @@ void hv_main(void) {
 	/* M25: virtio-blk -- a guest writes a sector through a request chain. */
 	vblk_demo();
 
+	/* M26: virtio-blk READ -- guest reads a sector the hypervisor seeded. */
+	vblk_rd_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();

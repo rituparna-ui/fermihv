@@ -113,6 +113,9 @@ void virtio_irq_demo(void);
 /* M25 demo: virtio-blk -- a guest writes a sector through a request chain. */
 void vblk_demo(void);
 
+/* M26 demo: virtio-blk READ -- guest reads a sector the hypervisor seeded. */
+void vblk_rd_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

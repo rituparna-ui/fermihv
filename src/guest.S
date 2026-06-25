@@ -922,3 +922,146 @@ gvblk_bad:
 	.balign 8
 gvblk_msg:
 	.asciz	"FermiHV-virtio-blk-sector0!"
+
+/* ------------------------------------------------------------------ */
+/* M26 guest: virtio-blk READ. Issues one read request for sector 0;    */
+/* its completion handler reports the first 8 bytes read back via HVC.   */
+/* ------------------------------------------------------------------ */
+.balign 4
+.global guest_vblk_rd_entry
+guest_vblk_rd_entry:
+	movz	x2, #0x0800, lsl #16
+	mov	w0, #0x12
+	str	w0, [x2]
+	movz	x3, #0x080A, lsl #16
+	str	wzr, [x3, #0x14]
+	movz	x4, #0x080B, lsl #16
+	mov	w0, #0xFFFFFFFF
+	str	w0, [x4, #0x80]
+	mov	w0, #1
+	lsl	w0, w0, #21
+	str	w0, [x4, #0x100]         /* enable INTID 21 */
+	mov	x0, #1
+	msr	icc_sre_el1, x0
+	isb
+	mov	x0, #0xFF
+	msr	icc_pmr_el1, x0
+	mov	x0, #1
+	msr	icc_igrpen1_el1, x0
+	adr	x0, gvbrd_vectors
+	msr	vbar_el1, x0
+	isb
+	msr	daifclr, #2
+
+	/* read request: header @0x40021000 {type=0 (IN), sector=0} */
+	movz	x6, #0x4002, lsl #16
+	add	x6, x6, #0x1000
+	str	wzr, [x6]
+	str	wzr, [x6, #4]
+	str	xzr, [x6, #8]
+	movz	x10, #0x4002, lsl #16    /* queue base 0x40020000 */
+	/* desc[0] header: NEXT next=1 */
+	str	x6, [x10, #0]
+	mov	w0, #16
+	str	w0, [x10, #8]
+	movz	w0, #1
+	movk	w0, #1, lsl #16
+	str	w0, [x10, #12]
+	/* desc[1] data @0x40022000 (device-writable): WRITE|NEXT next=2 */
+	movz	x8, #0x4002, lsl #16
+	add	x8, x8, #0x2000
+	str	x8, [x10, #16]
+	mov	w0, #16
+	str	w0, [x10, #24]
+	movz	w0, #3
+	movk	w0, #2, lsl #16
+	str	w0, [x10, #28]
+	/* desc[2] status @0x40021100: WRITE */
+	add	x7, x6, #0x100
+	str	x7, [x10, #32]
+	mov	w0, #1
+	str	w0, [x10, #40]
+	mov	w0, #2
+	str	w0, [x10, #44]
+	add	x4, x10, #64             /* avail ring (QueueNum=4) */
+	strh	wzr, [x4, #0]
+	mov	w0, #1
+	strh	w0, [x4, #2]
+	strh	wzr, [x4, #4]
+	dsb	sy
+	movz	x5, #0x0A00, lsl #16
+	add	x5, x5, #0x200
+	mov	w0, #4096
+	str	w0, [x5, #0x28]
+	str	wzr, [x5, #0x30]
+	mov	w0, #4
+	str	w0, [x5, #0x38]
+	mov	w0, #4096
+	str	w0, [x5, #0x3c]
+	movz	w0, #0x0004, lsl #16
+	movk	w0, #0x0020
+	str	w0, [x5, #0x40]
+	mov	w0, #0xF
+	str	w0, [x5, #0x70]
+	str	wzr, [x5, #0x50]         /* notify -> device reads disk into buffer + IRQ */
+3:	wfi
+	b	3b
+
+	.balign 2048
+gvbrd_vectors:
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_irq
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+	.balign 0x80
+	b	gvbrd_bad
+
+gvbrd_irq:
+	sub	sp, sp, #32
+	stp	x0, x1, [sp]
+	stp	x2, x3, [sp, #16]
+	mrs	x0, icc_iar1_el1
+	movz	x2, #0x0A00, lsl #16
+	add	x2, x2, #0x200
+	ldr	w1, [x2, #0x60]
+	str	w1, [x2, #0x64]
+	msr	icc_eoir1_el1, x0
+	/* report the first 8 bytes read back from the device into the buffer */
+	movz	x3, #0x4002, lsl #16
+	add	x3, x3, #0x2000
+	ldr	x1, [x3]
+	mov	x0, #0xBEAD
+	hvc	#0
+	ldp	x2, x3, [sp, #16]
+	ldp	x0, x1, [sp]
+	add	sp, sp, #32
+	eret
+
+gvbrd_bad:
+	b	.

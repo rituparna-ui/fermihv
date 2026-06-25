@@ -25,5 +25,6 @@ void vblk_reset(void);
 void vblk_mmio(vcpu_t *v, uint64_t ipa);
 int vblk_take_irq(void);
 void vblk_peek(char *out, int n);   /* hypervisor's view of disk sector 0 */
+void vblk_poke(const char *in, int n); /* hypervisor seeds disk sector 0 */
 
 #endif /* FERMIHV_VVIRTIO_H */
