@@ -124,6 +124,9 @@ to C. `exception.c` decodes `ESR_EL2` and dispatches: HVC, stage-2 abort
 | M28 | **Per-VM virtio-blk**: each tenant gets its own isolated backing disk |
 | M29 | **Per-vCPU GIC context**: two vCPUs, each with independent virtual-interrupt state |
 | M30 | **Per-vCPU GICR frames**: each vCPU owns a redistributor at a distinct address |
+| M31 | **Interactive Linux on the emulated vGIC**: UART RX IRQ routed as a vGIC SPI |
+| M32 | **Multi-vCPU (SMP) Linux** on the emulated vGIC: 2 CPUs via PSCI + per-vCPU GICR + IPIs |
+| M33 | **Multiple list registers**: up to 4 concurrent virtual IRQs per vCPU |
 
 Plus a committed correctness fix: **FP/SIMD save/restore across the world
 switch** (guests that use floating point/NEON, like Linux, need their `q`
@@ -218,22 +221,23 @@ fbfe6e9 feat(m0): EL2 boot skeleton with PL011 UART
 
 - A real **Linux** kernel and a second from-scratch kernel (**fermi-os**) each
   boot to an interactive shell — under passthrough *and* on the fully software-
-  emulated GICv3.
+  emulated GICv3 (including device-interrupt routing: the UART RX IRQ is
+  delivered to Linux as a virtual SPI).
+- **Multi-vCPU (SMP) Linux** boots on the emulated vGIC: two vCPUs brought up
+  via PSCI `CPU_ON`, each discovering its own redistributor frame, exchanging
+  inter-CPU IPIs, and taking per-CPU timer interrupts (`nproc` = 2).
 - **Two real OSes run concurrently** as isolated tenants (separate stage-2
   translation + VMID + per-VM vGIC + per-VM virtio devices).
 - A from-scratch **virtio device layer**: console and block devices, read and
   write, interrupt-driven completion via the vGIC, with **per-VM isolation**.
 - **SMP plumbing**: virtual IPIs, PSCI `CPU_ON`, per-vCPU virtual-GIC context
-  (list register + CPU interface) preserved across preemption, and per-vCPU
-  GICR frames — the building blocks of a multi-vCPU guest.
+  (4 list registers + CPU interface) preserved across preemption, per-vCPU GICR
+  frames, and GICD SPI routing.
 
 ## 9. Known limitations / future work
 
-- **linux-vgic** boots the kernel and virtual timer on the emulated vGIC but
-  does not deliver device SPIs (e.g. the UART IRQ), so it stops at `/init`
-  rather than an interactive console. Full SPI routing to a guest is future work.
-- **Multi-vCPU Linux** is not yet booted end-to-end: the remaining pieces are a
-  64-bit `GICR_TYPER` read path + a 2-CPU guest DTB (MPIDR/affinity matching),
-  on top of the per-vCPU GICR frames and context now in place.
-- virtio devices are minimal (single queue, legacy mmio); no virtio-net in the
-  emulated path (networking today uses passthrough virtio-net).
+- The emulated vGIC handles SGIs/PPIs and SPI enable/delivery, but not the full
+  GICD feature set (priority, IROUTER-based affinity routing, ITS/LPIs).
+- virtio devices are minimal (single queue, legacy mmio); there is no emulated
+  virtio-net (networking today uses passthrough virtio-net).
+- Stage-2 uses 1 GB identity/offset blocks rather than fine-grained 4 KB pages.
