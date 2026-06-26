@@ -1763,3 +1763,86 @@ void smp_vtimer_demo(void) {
 	            "in one VM, each with independent per-vCPU GIC state.\n",
 	            ticks[0], ticks[1]);
 }
+
+/* ------------------------------------------------------------------ */
+/* M30: SMP redistributors. Two vCPUs in one VM, each owning a SEPARATE  */
+/* GICR frame addressed by CPU id (0x080A0000 and 0x080C0000). The vGIC   */
+/* routes each frame to that vCPU's redistributor state and presents      */
+/* GICR_TYPER.Last + per-frame affinity -- the layout Linux's gic-v3      */
+/* driver walks to discover each CPU's redistributor.                     */
+/* ------------------------------------------------------------------ */
+
+extern char guest_smpgicr_start[];
+extern char guest_smpgicr_end[];
+
+void smp_gicr_demo(void) {
+	stage2_init();
+	vgic_reset();
+	vgic_set_ngicr(2);            /* two redistributor frames */
+	gic_init_el2();
+	hyptimer_init();
+
+	uint64_t sz = (uint64_t)(guest_smpgicr_end - guest_smpgicr_start);
+	for (uint64_t i = 0; i < sz; i++)
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_smpgicr_start)[i];
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x8000,  vttbr, 0);
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x10000, vttbr, 1);
+	vcpus[0].x[0] = 0;            /* CPU id passed to the guest */
+	vcpus[1].x[0] = 1;
+
+	uart_println("[M30] two vCPUs, each with its OWN redistributor frame "
+	             "(0x080A0000 / 0x080C0000),");
+	uart_println("      addressed by CPU id and routed by the vGIC:");
+
+	hyptimer_start(10);
+	int ticks[2] = {0, 0}, pend[2] = {0, 0}, cur = 0, guard = 0;
+	while ((ticks[0] < 3 || ticks[1] < 3) && guard++ < 60000) {
+		/* Gate on the vCPU's OWN redistributor enable state (frame == id). */
+		if (pend[cur] && vgic_irq_enabled(cur, 27)) {
+			vgic_inject(&vcpus[cur], 27);
+			pend[cur] = 0;
+		}
+		vcpu_run_once(&vcpus[cur]);
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				pend[0] = pend[1] = 1;
+				cur ^= 1;
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			ticks[cur]++;
+			uart_printf("[M30] vCPU%d serviced a timer IRQ via its OWN "
+			            "redistributor (frame %d, count=%u)\n",
+			            cur, cur, vcpus[cur].x[0]);
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
+			/* Single VM (vm=0); the GICR frame address selects the vCPU. */
+			if (vgic_contains(ipa))
+				vgic_mmio(0, &vcpus[cur], ipa);
+			else
+				mmio_zero(&vcpus[cur]);
+		} else {
+			uart_printf("[M30] vCPU%d unexpected exit ec=%x (%s)\n",
+			            cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_printf("[M30] vCPU0 used redistributor frame 0, vCPU1 used frame 1 -- "
+	            "per-vCPU GICR routing (%d + %d ticks).\n", ticks[0], ticks[1]);
+}

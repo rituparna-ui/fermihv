@@ -103,6 +103,9 @@ void hv_main(void) {
 	/* M29: SMP virtual timer -- two vCPUs in one VM, per-vCPU GIC context. */
 	smp_vtimer_demo();
 
+	/* M30: SMP redistributors -- two vCPUs, each with its own GICR frame. */
+	smp_gicr_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();

@@ -47,6 +47,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M27 | **Per-VM virtio devices**: two tenants each drive their own virtio-console |
 | M28 | **Per-VM virtio-blk**: each tenant gets its own isolated backing disk |
 | M29 | **Per-vCPU GIC context**: two vCPUs in one VM, each with independent virtual-interrupt state |
+| M30 | **Per-vCPU GICR frames**: each vCPU owns a redistributor at a distinct address |
 
 ## Architecture
 

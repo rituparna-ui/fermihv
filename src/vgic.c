@@ -17,6 +17,9 @@ struct vgic_state {
 
 static struct vgic_state vg[VGIC_MAX_VCPUS];          /* indexed by VM */
 static uint32_t g_sgi_pending[VGIC_MAX_VCPUS];        /* per-vCPU SGIs (SMP) */
+static int g_ngicr = 1;                               /* redistributor frames */
+
+void vgic_set_ngicr(int n) { g_ngicr = n; }
 
 int vgic_contains(uint64_t ipa) {
 	return (ipa >= VGIC_GICD_BASE && ipa < VGIC_GICD_BASE + VGIC_GICD_SIZE) ||
@@ -24,6 +27,7 @@ int vgic_contains(uint64_t ipa) {
 }
 
 void vgic_reset(void) {
+	g_ngicr = 1;
 	for (int i = 0; i < VGIC_MAX_VCPUS; i++) {
 		vg[i].gicd_ctlr = 0;
 		vg[i].enabled = 0;
@@ -38,13 +42,21 @@ int vgic_irq_enabled(int vm, uint32_t intid) {
 
 static uint32_t reg_read(int vm, uint64_t ipa) {
 	if (ipa >= VGIC_GICR_BASE) {
-		uint64_t off = ipa - VGIC_GICR_BASE;
+		/* Which redistributor frame (=which vCPU) is being addressed? */
+		uint64_t goff = ipa - VGIC_GICR_BASE;
+		int frame = (int)(goff / VGIC_GICR_STRIDE);
+		uint64_t off = goff % VGIC_GICR_STRIDE;
+		int idx = vm + frame;
+		if (idx >= VGIC_MAX_VCPUS) idx = VGIC_MAX_VCPUS - 1;
 		switch (off) {
 		case 0x0014: return 0;            /* GICR_WAKER: awake */
-		case 0x0008: return 1u << 4;      /* GICR_TYPER lo: Last; PLPIS=0 */
+		case 0x0008:                      /* GICR_TYPER[31:0]: Last + ProcNum */
+			return ((frame == g_ngicr - 1) ? (1u << 4) : 0) |
+			       ((uint32_t)frame << 8);
+		case 0x000C: return (uint32_t)frame; /* GICR_TYPER[63:32]: Aff0 = frame */
 		case 0xFFE8: return 0x30;         /* GICR_PIDR2: GICv3 (ArchRev=3) */
-		case GICR_SGI_OFF + 0x0080: return vg[vm].group;    /* IGROUPR0   */
-		case GICR_SGI_OFF + 0x0100: return vg[vm].enabled;  /* ISENABLER0 */
+		case GICR_SGI_OFF + 0x0080: return vg[idx].group;    /* IGROUPR0   */
+		case GICR_SGI_OFF + 0x0100: return vg[idx].enabled;  /* ISENABLER0 */
 		default: return 0;
 		}
 	}
@@ -60,11 +72,15 @@ static uint32_t reg_read(int vm, uint64_t ipa) {
 
 static void reg_write(int vm, uint64_t ipa, uint32_t val) {
 	if (ipa >= VGIC_GICR_BASE) {
-		uint64_t off = ipa - VGIC_GICR_BASE;
+		uint64_t goff = ipa - VGIC_GICR_BASE;
+		int frame = (int)(goff / VGIC_GICR_STRIDE);
+		uint64_t off = goff % VGIC_GICR_STRIDE;
+		int idx = vm + frame;
+		if (idx >= VGIC_MAX_VCPUS) idx = VGIC_MAX_VCPUS - 1;
 		switch (off) {
-		case GICR_SGI_OFF + 0x0080: vg[vm].group = val; break;     /* IGROUPR0   */
-		case GICR_SGI_OFF + 0x0100: vg[vm].enabled |= val; break;  /* ISENABLER0 */
-		case GICR_SGI_OFF + 0x0180: vg[vm].enabled &= ~val; break; /* ICENABLER0 */
+		case GICR_SGI_OFF + 0x0080: vg[idx].group = val; break;     /* IGROUPR0   */
+		case GICR_SGI_OFF + 0x0100: vg[idx].enabled |= val; break;  /* ISENABLER0 */
+		case GICR_SGI_OFF + 0x0180: vg[idx].enabled &= ~val; break; /* ICENABLER0 */
 		default: break;
 		}
 		return;

@@ -130,6 +130,9 @@ void mtenant_vblk_demo(void);
 /* M29 demo: SMP virtual timer -- two vCPUs in one VM, per-vCPU GIC context. */
 void smp_vtimer_demo(void);
 
+/* M30 demo: SMP redistributors -- two vCPUs, each with its own GICR frame. */
+void smp_gicr_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 
