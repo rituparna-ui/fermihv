@@ -34,6 +34,11 @@ typedef struct vcpu {
 	uint64_t sp_el1, elr_el1, spsr_el1, esr_el1, far_el1;
 	uint64_t tpidr_el0, tpidrro_el0, tpidr_el1;
 
+	/* --- per-vCPU virtual GIC context (saved/restored across switches) --- */
+	uint64_t ich_lr0;     /* List Register 0: pending/active virtual IRQ */
+	uint64_t ich_vmcr;    /* virtual CPU interface control (VENG/VPMR/...)  */
+	uint64_t ich_ap1r0;   /* virtual active priorities (group 1)            */
+
 	/* --- VM config / bookkeeping --- */
 	uint64_t vttbr;       /* stage-2 base + VMID for this vCPU */
 	int      id;
@@ -121,6 +126,9 @@ void mtenant_virtio_demo(void);
 
 /* M28 demo: per-VM virtio-blk -- two isolated tenants, each with its own disk. */
 void mtenant_vblk_demo(void);
+
+/* M29 demo: SMP virtual timer -- two vCPUs in one VM, per-vCPU GIC context. */
+void smp_vtimer_demo(void);
 
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);

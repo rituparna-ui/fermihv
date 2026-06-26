@@ -87,8 +87,18 @@ void vcpu_init(vcpu_t *v, uint64_t entry, uint64_t sp_el1, uint64_t vttbr,
 void vcpu_run_once(vcpu_t *v) {
 	restore_el1_sysregs(v);
 	wr_sysreg("vttbr_el2", v->vttbr);
+	/* Restore this vCPU's virtual GIC context (list register + CPU interface
+	 * control + active priorities) so interrupt state is per-vCPU. */
+	__asm__ volatile("msr ich_vmcr_el2, %0" ::"r"(v->ich_vmcr));
+	__asm__ volatile("msr ich_ap1r0_el2, %0" ::"r"(v->ich_ap1r0));
+	__asm__ volatile("msr ich_lr0_el2, %0" ::"r"(v->ich_lr0));
 	__asm__ volatile("isb");
 	__guest_enter(v);          /* returns when the guest traps back to EL2 */
+	/* Capture any updated virtual GIC state (e.g. an IRQ the guest acked but
+	 * has not yet EOI'd) back into the vCPU before switching away. */
+	__asm__ volatile("mrs %0, ich_lr0_el2" : "=r"(v->ich_lr0));
+	__asm__ volatile("mrs %0, ich_vmcr_el2" : "=r"(v->ich_vmcr));
+	__asm__ volatile("mrs %0, ich_ap1r0_el2" : "=r"(v->ich_ap1r0));
 	save_el1_sysregs(v);
 }
 
@@ -176,10 +186,11 @@ void sched_demo(void) {
 /* Inject a pending Group-1 virtual interrupt into list register 0.
  * ICH_LR<n>_EL2: [63:62]=State(01=pending), [61]=HW(0=SW), [60]=Group(1),
  * [55:48]=priority, [31:0]=vINTID. */
-static void vgic_inject(uint32_t vintid) {
-	uint64_t lr = (1ULL << 62) | (1ULL << 60) | (uint64_t)vintid;
-	__asm__ volatile("msr ich_lr0_el2, %0" ::"r"(lr));
-	__asm__ volatile("isb");
+/* Inject a virtual IRQ into vCPU `v` by setting its saved list register; it is
+ * loaded into the live ICH_LR0 the next time the vCPU runs. State = pending,
+ * Group 1. */
+static void vgic_inject(vcpu_t *v, uint32_t vintid) {
+	v->ich_lr0 = (1ULL << 62) | (1ULL << 60) | (uint64_t)vintid;
 }
 
 void virq_demo(int nticks) {
@@ -209,7 +220,7 @@ void virq_demo(int nticks) {
 			uint32_t intid = iar & 0xFFFFFF;
 			if (intid == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
-				vgic_inject(VTIMER_VINTID);
+				vgic_inject(&vcpus[0], VTIMER_VINTID);
 			}
 			if (intid < GIC_SPURIOUS_INTID)
 				gic_eoi(iar);
@@ -263,7 +274,7 @@ void vgic_demo(int nticks) {
 			if (intid == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
 				if (vgic_irq_enabled(0, 27))
-					vgic_inject(27);
+					vgic_inject(&vcpus[0], 27);
 			}
 			if (intid < GIC_SPURIOUS_INTID)
 				gic_eoi(iar);
@@ -322,7 +333,7 @@ void smp_demo(void) {
 		for (int i = 0; i < 2 && !got; i++) {
 			int s = vgic_pop_sgi(i);
 			if (s >= 0) {
-				vgic_inject((uint32_t)s);
+				vgic_inject(&vcpus[i], (uint32_t)s);
 				uart_printf("[M14] injecting SGI %d into vCPU%d's list register\n",
 				            s, i);
 			}
@@ -395,7 +406,7 @@ void smp_sched_demo(void) {
 	while (slices < 12 && guard++ < 100000) {
 		int s = vgic_pop_sgi(cur);
 		if (s >= 0)
-			vgic_inject((uint32_t)s);
+			vgic_inject(&vcpus[cur], (uint32_t)s);
 
 		vcpu_run_once(&vcpus[cur]);
 
@@ -532,7 +543,7 @@ void mtenant_vgic_demo(void) {
 	int cur = 0, guard = 0;
 	while ((ticks[0] < 3 || ticks[1] < 3) && guard++ < 20000) {
 		if (pend[cur] && vgic_irq_enabled(cur, 27)) {
-			vgic_inject(27);
+			vgic_inject(&vcpus[cur], 27);
 			pend[cur] = 0;
 		}
 		vcpu_run_once(&vcpus[cur]);
@@ -903,7 +914,7 @@ void fermios_vgic_boot(void) {
 			if (intid == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
 				if (vgic_irq_enabled(0, 30))
-					vgic_inject(30);     /* deliver the guest's timer tick */
+					vgic_inject(&vcpus[0], 30);     /* deliver the guest's timer tick */
 			}
 			if (intid < GIC_SPURIOUS_INTID)
 				gic_eoi(iar);
@@ -986,7 +997,7 @@ void mtenant_real_demo(void) {
 		wr_sysreg("hcr_el2", hcr[cur]);   /* per-VM HCR (DC differs) */
 		__asm__ volatile("isb");
 		if (pend[cur] && vgic_irq_enabled(cur, intid[cur])) {
-			vgic_inject(intid[cur]);
+			vgic_inject(&vcpus[cur], intid[cur]);
 			pend[cur] = 0;
 		}
 
@@ -1099,9 +1110,9 @@ void linux_vgic_boot(void) {
 			if (id == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
 				if (vgic_irq_enabled(0, 30))
-					vgic_inject(30);
+					vgic_inject(&vcpus[0], 30);
 				else if (vgic_irq_enabled(0, 27))
-					vgic_inject(27);
+					vgic_inject(&vcpus[0], 27);
 			}
 			if (id < GIC_SPURIOUS_INTID)
 				gic_eoi(iar);
@@ -1185,9 +1196,9 @@ void mtenant_os_demo(void) {
 	while (guard++ < 4000000) {
 		if (pend[cur]) {
 			if (vgic_irq_enabled(cur, 30))
-				vgic_inject(30);
+				vgic_inject(&vcpus[cur], 30);
 			else if (vgic_irq_enabled(cur, 27))
-				vgic_inject(27);
+				vgic_inject(&vcpus[cur], 27);
 			pend[cur] = 0;
 		}
 		vcpu_run_once(&vcpus[cur]);
@@ -1271,7 +1282,7 @@ void smp_psci_demo(void) {
 
 		int s = vgic_pop_sgi(cur);
 		if (s >= 0)
-			vgic_inject((uint32_t)s);
+			vgic_inject(&vcpus[cur], (uint32_t)s);
 
 		vcpu_run_once(&vcpus[cur]);
 
@@ -1414,7 +1425,7 @@ void virtio_irq_demo(void) {
 		}
 		/* device raised a completion IRQ -> inject it if the guest enabled it */
 		if (virtio_take_irq(0) && vgic_irq_enabled(0, 20))
-			vgic_inject(20);
+			vgic_inject(&vcpus[0], 20);
 	}
 	uart_println("[M24] virtio-console is interrupt-driven end-to-end: the device "
 	             "wrote the used ring and signalled the guest through the vGIC.");
@@ -1470,7 +1481,7 @@ void vblk_demo(void) {
 			break;
 		}
 		if (vblk_take_irq(0) && vgic_irq_enabled(0, 21))
-			vgic_inject(21);
+			vgic_inject(&vcpus[0], 21);
 	}
 
 	char buf[40];
@@ -1535,7 +1546,7 @@ void vblk_rd_demo(void) {
 			break;
 		}
 		if (vblk_take_irq(0) && vgic_irq_enabled(0, 21))
-			vgic_inject(21);
+			vgic_inject(&vcpus[0], 21);
 	}
 
 	char rb[9];
@@ -1676,4 +1687,79 @@ void mtenant_vblk_demo(void) {
 	uart_printf("[M28] after VM1 wrote: VM1 disk=\"%s\"\n", d1);
 	uart_println("[M28] each tenant's block device wrote only its own backing disk "
 	             "-- per-VM storage isolation.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M29: SMP virtual timer. ONE VM, TWO vCPUs sharing a stage-2, each     */
+/* with its OWN redistributor and its OWN virtual-interrupt context       */
+/* (list register + CPU interface), preserved across time-slices by the   */
+/* per-vCPU ICH_LR/ICH_VMCR save & restore in the world switch.           */
+/* ------------------------------------------------------------------ */
+
+void smp_vtimer_demo(void) {
+	stage2_init();
+	vgic_reset();
+	gic_init_el2();
+	hyptimer_init();
+
+	uint64_t sz = (uint64_t)(guest_tvgic_end - guest_tvgic_start);
+	for (uint64_t i = 0; i < sz; i++)
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_tvgic_start)[i];
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	/* One VM (shared stage-2), two vCPUs with separate stacks. */
+	uint64_t vttbr = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4); /* RW|VM|DC|IMO */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x8000,  vttbr, 0);
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x10000, vttbr, 1);
+
+	uart_println("[M29] one VM, TWO vCPUs: each with its OWN redistributor + virtual-");
+	uart_println("      timer interrupt context (LR + CPU interface), time-sliced and");
+	uart_println("      preempted by the EL2 timer:");
+
+	hyptimer_start(10);
+	int ticks[2] = {0, 0}, pend[2] = {0, 0}, cur = 0, guard = 0;
+	while ((ticks[0] < 3 || ticks[1] < 3) && guard++ < 60000) {
+		if (pend[cur] && vgic_irq_enabled(cur, 27)) {
+			vgic_inject(&vcpus[cur], 27);
+			pend[cur] = 0;
+		}
+		vcpu_run_once(&vcpus[cur]);
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+		if ((reason & 3) == 1) {
+			uint64_t iar = gic_ack();
+			uint32_t intid = iar & 0xFFFFFF;
+			if (intid == HYP_TIMER_PPI) {
+				hyptimer_on_irq();
+				pend[0] = pend[1] = 1;   /* a tick is available to both vCPUs */
+				cur ^= 1;                /* time-slice switch */
+			}
+			if (intid < GIC_SPURIOUS_INTID)
+				gic_eoi(iar);
+		} else if (ec == EC_HVC64) {
+			ticks[cur]++;
+			uart_printf("[M29] vCPU%d serviced its OWN virtual timer tick #%d "
+			            "(guest count=%u)\n", cur, ticks[cur], vcpus[cur].x[0]);
+		} else if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
+			if (vgic_contains(ipa))
+				vgic_mmio(cur, &vcpus[cur], ipa);
+			else
+				mmio_zero(&vcpus[cur]);
+		} else {
+			uart_printf("[M29] vCPU%d unexpected exit ec=%x (%s)\n",
+			            cur, ec, ec_name(ec));
+			break;
+		}
+	}
+	hyptimer_stop();
+	uart_printf("[M29] vCPU0 serviced %d timer ticks, vCPU1 serviced %d -- two cores "
+	            "in one VM, each with independent per-vCPU GIC state.\n",
+	            ticks[0], ticks[1]);
 }

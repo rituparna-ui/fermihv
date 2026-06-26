@@ -26,6 +26,15 @@ _start:
 	msr	cptr_el2, x0
 	isb
 
+	// Enable the GIC system-register interface at EL2 (ICC_SRE_EL2.SRE|Enable)
+	// so the per-vCPU virtual GIC context (ICH_* registers) is always
+	// accessible in the world switch, even before gic_init_el2() runs.
+	mrs	x0, S3_4_C12_C9_5      // ICC_SRE_EL2
+	orr	x0, x0, #(1 << 0)      // SRE
+	orr	x0, x0, #(1 << 3)      // Enable (lower-EL system-register access)
+	msr	S3_4_C12_C9_5, x0
+	isb
+
 	// Zero the BSS [__bss_start, __bss_end).
 	ldr	x0, =__bss_start
 	ldr	x1, =__bss_end
