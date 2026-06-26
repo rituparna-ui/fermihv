@@ -116,6 +116,9 @@ void vblk_demo(void);
 /* M26 demo: virtio-blk READ -- guest reads a sector the hypervisor seeded. */
 void vblk_rd_demo(void);
 
+/* M27 demo: per-VM virtio -- two isolated tenants, each with its own console. */
+void mtenant_virtio_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

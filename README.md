@@ -44,6 +44,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M24 | **Interrupt-driven virtio**: used ring + completion IRQ via the vGIC |
 | M25 | **virtio-blk**: guest writes a sector via a request chain to a backing disk |
 | M26 | **virtio-blk read** verified: guest reads back a hypervisor-seeded sector |
+| M27 | **Per-VM virtio devices**: two tenants each drive their own virtio-console |
 
 ## Architecture
 

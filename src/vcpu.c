@@ -18,6 +18,8 @@ extern char guest_tenant_start[];
 extern char guest_tenant_end[];
 extern char guest_tvgic_start[];
 extern char guest_tvgic_end[];
+extern char guest_virtio_start[];   /* M23 virtio-console guest blob (start) */
+extern char guest_virtio_end[];
 
 /* SPSR for entering EL1h with DAIF masked (D|A|I|F=1, M=0b0101). */
 #define SPSR_EL1H_MASKED 0x3C5UL
@@ -1350,7 +1352,7 @@ void virtio_demo(void) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (virtio_contains(ipa))
-				virtio_mmio(&vcpus[0], ipa);
+				virtio_mmio(0, &vcpus[0], ipa);
 			else
 				mmio_zero(&vcpus[0]);
 		} else {
@@ -1401,7 +1403,7 @@ void virtio_irq_demo(void) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (virtio_contains(ipa))
-				virtio_mmio(&vcpus[0], ipa);
+				virtio_mmio(0, &vcpus[0], ipa);
 			else if (vgic_contains(ipa))
 				vgic_mmio(0, &vcpus[0], ipa);
 			else
@@ -1411,7 +1413,7 @@ void virtio_irq_demo(void) {
 			break;
 		}
 		/* device raised a completion IRQ -> inject it if the guest enabled it */
-		if (virtio_take_irq() && vgic_irq_enabled(0, 20))
+		if (virtio_take_irq(0) && vgic_irq_enabled(0, 20))
 			vgic_inject(20);
 	}
 	uart_println("[M24] virtio-console is interrupt-driven end-to-end: the device "
@@ -1543,4 +1545,65 @@ void vblk_rd_demo(void) {
 	uart_printf("[M26] guest read back first 8 bytes = \"%s\"\n", rb);
 	uart_println("[M26] virtio-blk read path verified: device copied the backing "
 	             "disk into the guest's buffer, with a completion IRQ.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M27: per-VM virtio devices. Two isolated tenants, each driving its    */
+/* OWN emulated virtio-console instance (separate device state, and the  */
+/* device translates each VM's guest addresses into that VM's RAM block).*/
+/* ------------------------------------------------------------------ */
+
+void mtenant_virtio_demo(void) {
+	stage2_init();
+	virtio_reset();
+
+	/* Copy the M23 virtio guest into each VM's private host RAM block. */
+	uint64_t sz = (uint64_t)(guest_virtio_end - guest_virtio_start);
+	for (uint64_t i = 0; i < sz; i++) {
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_virtio_start)[i];
+		((volatile uint8_t *)VM1_PA)[i] = ((uint8_t *)guest_virtio_start)[i];
+	}
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr0 = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t vttbr1 = stage2_build_vm(1, VM_IPA, VM1_PA, 2);
+
+	/* Tell each VM's device how to translate its guest addresses to host. */
+	virtio_set_offset(0, VM0_PA - VM_IPA);
+	virtio_set_offset(1, VM1_PA - VM_IPA);
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12); /* RW|VM|DC */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x10000, vttbr0, 0);
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x10000, vttbr1, 1);
+
+	uart_println("[M27] two isolated VMs, each with its OWN emulated virtio-console "
+	             "(separate device state + per-VM address translation):");
+
+	for (int cur = 0; cur < 2; cur++) {
+		uart_printf("      VM%d console emits> ", cur);
+		int done = 0, guard = 0;
+		while (!done && guard++ < 50000) {
+			vcpu_run_once(&vcpus[cur]);
+			uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
+			if (ec == EC_HVC64) {
+				done = 1;
+			} else if (ec == EC_DABT_LOW) {
+				uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+				               (vcpus[cur].exit_far & 0xFFF);
+				if (virtio_contains(ipa))
+					virtio_mmio(cur, &vcpus[cur], ipa);
+				else
+					mmio_zero(&vcpus[cur]);
+			} else {
+				uart_printf("\n[M27] VM%d unexpected exit ec=%x (%s)\n",
+				            cur, ec, ec_name(ec));
+				break;
+			}
+		}
+	}
+	uart_println("[M27] each tenant's virtio-console processed its own virtqueue "
+	             "from its own RAM block -- per-VM device isolation.");
 }

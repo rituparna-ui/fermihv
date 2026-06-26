@@ -604,6 +604,9 @@ gpsci_bad:
 /* split virtqueue pointing at a message, programs the virtio-mmio       */
 /* registers, and notifies -- the hypervisor prints the queued bytes.    */
 /* ------------------------------------------------------------------ */
+.balign 4
+.global guest_virtio_start
+guest_virtio_start:
 .global guest_virtio_entry
 guest_virtio_entry:
 	movz	x10, #0x4002, lsl #16    /* queue page @ guest IPA 0x40020000 */
@@ -647,6 +650,9 @@ guest_virtio_entry:
 	.balign 8
 vvmsg:
 	.asciz	"Hello from a guest, printed through an EMULATED virtio-console device!\n"
+.balign 4
+.global guest_virtio_end
+guest_virtio_end:
 
 /* ------------------------------------------------------------------ */
 /* M24 guest: interrupt-driven virtio-console. Enables the device IRQ   */

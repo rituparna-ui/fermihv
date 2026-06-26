@@ -13,10 +13,11 @@
 
 int virtio_contains(uint64_t ipa);
 void virtio_reset(void);
-void virtio_mmio(vcpu_t *v, uint64_t ipa);
+void virtio_mmio(int vm, vcpu_t *v, uint64_t ipa);
+void virtio_set_offset(int vm, uint64_t off); /* guest->host translation */
 
-/* Returns 1 (once) if the device raised a completion interrupt. */
-int virtio_take_irq(void);
+/* Returns 1 (once) if VM `vm`'s device raised a completion interrupt. */
+int virtio_take_irq(int vm);
 
 /* --- virtio-blk (block device over a backing RAM disk) --- */
 #define VBLK_BASE 0x0A000200UL
