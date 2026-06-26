@@ -1071,3 +1071,73 @@ gvbrd_irq:
 
 gvbrd_bad:
 	b	.
+
+/* ------------------------------------------------------------------ */
+/* M28 guest: minimal virtio-blk writer. Writes its message to sector 0 */
+/* via a 3-descriptor chain and HVCs (no IRQ). Copied into each VM block.*/
+/* ------------------------------------------------------------------ */
+.balign 4
+.global guest_vbs_start
+guest_vbs_start:
+guest_vblk_simple_entry:
+	movz	x10, #0x4002, lsl #16    /* queue base 0x40020000 */
+	adr	x11, gvbs_msg
+	mov	x3, #0
+1:	ldrb	w0, [x11, x3]
+	cbz	w0, 2f
+	add	x3, x3, #1
+	b	1b
+2:	movz	x6, #0x4002, lsl #16
+	add	x6, x6, #0x1000          /* header @ 0x40021000 */
+	mov	w0, #1
+	str	w0, [x6]                 /* type = OUT (write) */
+	str	wzr, [x6, #4]
+	str	xzr, [x6, #8]
+	str	x6, [x10, #0]
+	mov	w0, #16
+	str	w0, [x10, #8]
+	movz	w0, #1
+	movk	w0, #1, lsl #16
+	str	w0, [x10, #12]           /* desc0: NEXT next=1 */
+	str	x11, [x10, #16]
+	str	w3, [x10, #24]
+	movz	w0, #1
+	movk	w0, #2, lsl #16
+	str	w0, [x10, #28]           /* desc1: data, NEXT next=2 */
+	add	x7, x6, #0x100
+	str	x7, [x10, #32]
+	mov	w0, #1
+	str	w0, [x10, #40]
+	mov	w0, #2
+	str	w0, [x10, #44]           /* desc2: status, WRITE */
+	add	x4, x10, #64             /* avail ring (QueueNum=4) */
+	strh	wzr, [x4, #0]
+	mov	w0, #1
+	strh	w0, [x4, #2]
+	strh	wzr, [x4, #4]
+	dsb	sy
+	movz	x5, #0x0A00, lsl #16
+	add	x5, x5, #0x200
+	mov	w0, #4096
+	str	w0, [x5, #0x28]
+	str	wzr, [x5, #0x30]
+	mov	w0, #4
+	str	w0, [x5, #0x38]
+	mov	w0, #4096
+	str	w0, [x5, #0x3c]
+	movz	w0, #0x0004, lsl #16
+	movk	w0, #0x0020
+	str	w0, [x5, #0x40]
+	mov	w0, #0xF
+	str	w0, [x5, #0x70]
+	str	wzr, [x5, #0x50]         /* notify -> device writes the disk */
+	hvc	#0
+3:	wfi
+	b	3b
+
+	.balign 8
+gvbs_msg:
+	.asciz	"per-VM virtio-blk!"
+.balign 4
+.global guest_vbs_end
+guest_vbs_end:

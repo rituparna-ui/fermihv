@@ -19,13 +19,14 @@ void virtio_set_offset(int vm, uint64_t off); /* guest->host translation */
 /* Returns 1 (once) if VM `vm`'s device raised a completion interrupt. */
 int virtio_take_irq(int vm);
 
-/* --- virtio-blk (block device over a backing RAM disk) --- */
+/* --- virtio-blk (per-VM block device over a backing RAM disk) --- */
 #define VBLK_BASE 0x0A000200UL
 int vblk_contains(uint64_t ipa);
 void vblk_reset(void);
-void vblk_mmio(vcpu_t *v, uint64_t ipa);
-int vblk_take_irq(void);
-void vblk_peek(char *out, int n);   /* hypervisor's view of disk sector 0 */
-void vblk_poke(const char *in, int n); /* hypervisor seeds disk sector 0 */
+void vblk_mmio(int vm, vcpu_t *v, uint64_t ipa);
+void vblk_set_offset(int vm, uint64_t off); /* guest->host translation */
+int vblk_take_irq(int vm);
+void vblk_peek(int vm, char *out, int n);   /* hypervisor's view of disk sector 0 */
+void vblk_poke(int vm, const char *in, int n); /* hypervisor seeds disk sector 0 */
 
 #endif /* FERMIHV_VVIRTIO_H */

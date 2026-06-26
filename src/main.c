@@ -97,6 +97,9 @@ void hv_main(void) {
 	/* M27: per-VM virtio -- two isolated tenants, each with its own console. */
 	mtenant_virtio_demo();
 
+	/* M28: per-VM virtio-blk -- two isolated tenants, each with its own disk. */
+	mtenant_vblk_demo();
+
 	/* M7: load and boot a separately-built guest kernel image. */
 	uart_println("[M7] booting a separately-built guest kernel:");
 	real_guest_demo();

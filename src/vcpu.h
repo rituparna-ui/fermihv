@@ -119,6 +119,9 @@ void vblk_rd_demo(void);
 /* M27 demo: per-VM virtio -- two isolated tenants, each with its own console. */
 void mtenant_virtio_demo(void);
 
+/* M28 demo: per-VM virtio-blk -- two isolated tenants, each with its own disk. */
+void mtenant_vblk_demo(void);
+
 /* M12: boot fermi-os (loaded at 0x40000000) as a guest. */
 void fermios_boot(void);
 

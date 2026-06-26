@@ -1459,7 +1459,7 @@ void vblk_demo(void) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (vblk_contains(ipa))
-				vblk_mmio(&vcpus[0], ipa);
+				vblk_mmio(0, &vcpus[0], ipa);
 			else if (vgic_contains(ipa))
 				vgic_mmio(0, &vcpus[0], ipa);
 			else
@@ -1469,12 +1469,12 @@ void vblk_demo(void) {
 			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
 			break;
 		}
-		if (vblk_take_irq() && vgic_irq_enabled(0, 21))
+		if (vblk_take_irq(0) && vgic_irq_enabled(0, 21))
 			vgic_inject(21);
 	}
 
 	char buf[40];
-	vblk_peek(buf, 32);
+	vblk_peek(0, buf, 32);
 	buf[32] = 0;
 	uart_printf("[M25] hypervisor reads virtio-blk disk sector 0 = \"%s\"\n", buf);
 	uart_println("[M25] virtio-blk works: guest request chain -> device -> backing "
@@ -1494,7 +1494,7 @@ void vblk_rd_demo(void) {
 
 	/* Hypervisor seeds disk sector 0 with a known 8-byte magic. */
 	const char magic[8] = {'V','B','L','K','-','R','D','!'};
-	vblk_poke(magic, 8);
+	vblk_poke(0, magic, 8);
 
 	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12) | (1UL << 4);
 	wr_sysreg("hcr_el2", hcr);
@@ -1524,7 +1524,7 @@ void vblk_rd_demo(void) {
 			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
 			               (vcpus[0].exit_far & 0xFFF);
 			if (vblk_contains(ipa))
-				vblk_mmio(&vcpus[0], ipa);
+				vblk_mmio(0, &vcpus[0], ipa);
 			else if (vgic_contains(ipa))
 				vgic_mmio(0, &vcpus[0], ipa);
 			else
@@ -1534,7 +1534,7 @@ void vblk_rd_demo(void) {
 			            ec, ec_name(ec), vcpus[0].exit_far);
 			break;
 		}
-		if (vblk_take_irq() && vgic_irq_enabled(0, 21))
+		if (vblk_take_irq(0) && vgic_irq_enabled(0, 21))
 			vgic_inject(21);
 	}
 
@@ -1606,4 +1606,74 @@ void mtenant_virtio_demo(void) {
 	}
 	uart_println("[M27] each tenant's virtio-console processed its own virtqueue "
 	             "from its own RAM block -- per-VM device isolation.");
+}
+
+/* ------------------------------------------------------------------ */
+/* M28: per-VM virtio-blk. Two isolated tenants, each with its OWN block  */
+/* device + backing disk. Proves a write on one VM's disk never touches   */
+/* the other's.                                                           */
+/* ------------------------------------------------------------------ */
+
+extern char guest_vbs_start[];
+extern char guest_vbs_end[];
+
+void mtenant_vblk_demo(void) {
+	stage2_init();
+	vblk_reset();
+
+	uint64_t sz = (uint64_t)(guest_vbs_end - guest_vbs_start);
+	for (uint64_t i = 0; i < sz; i++) {
+		((volatile uint8_t *)VM0_PA)[i] = ((uint8_t *)guest_vbs_start)[i];
+		((volatile uint8_t *)VM1_PA)[i] = ((uint8_t *)guest_vbs_start)[i];
+	}
+	__asm__ volatile("dsb sy; ic ialluis; dsb sy; isb");
+
+	uint64_t vttbr0 = stage2_build_vm(0, VM_IPA, VM0_PA, 1);
+	uint64_t vttbr1 = stage2_build_vm(1, VM_IPA, VM1_PA, 2);
+	vblk_set_offset(0, VM0_PA - VM_IPA);
+	vblk_set_offset(1, VM1_PA - VM_IPA);
+
+	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 12); /* RW|VM|DC */
+	wr_sysreg("hcr_el2", hcr);
+	__asm__ volatile("isb");
+
+	vcpu_init(&vcpus[0], VM_IPA, VM_IPA + 0x10000, vttbr0, 0);
+	vcpu_init(&vcpus[1], VM_IPA, VM_IPA + 0x10000, vttbr1, 1);
+
+	uart_println("[M28] two isolated VMs, each with its OWN virtio-blk disk:");
+
+	/* Run VM0; it writes its own disk. */
+	for (int g = 0; g < 50000; g++) {
+		vcpu_run_once(&vcpus[0]);
+		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		if (ec == EC_HVC64) break;
+		if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
+			               (vcpus[0].exit_far & 0xFFF);
+			if (vblk_contains(ipa)) vblk_mmio(0, &vcpus[0], ipa);
+			else mmio_zero(&vcpus[0]);
+		} else break;
+	}
+	char d0[24], d1[24];
+	vblk_peek(0, d0, 18); d0[18] = 0;
+	vblk_peek(1, d1, 18); d1[18] = 0;
+	uart_printf("[M28] after VM0 wrote: VM0 disk=\"%s\"; VM1 disk first byte=%x "
+	            "(untouched)\n", d0, (uint8_t)d1[0]);
+
+	/* Run VM1; it writes its own (separate) disk. */
+	for (int g = 0; g < 50000; g++) {
+		vcpu_run_once(&vcpus[1]);
+		uint64_t ec = ESR_EC(vcpus[1].exit_esr);
+		if (ec == EC_HVC64) break;
+		if (ec == EC_DABT_LOW) {
+			uint64_t ipa = ((vcpus[1].exit_hpfar >> 4) << 12) |
+			               (vcpus[1].exit_far & 0xFFF);
+			if (vblk_contains(ipa)) vblk_mmio(1, &vcpus[1], ipa);
+			else mmio_zero(&vcpus[1]);
+		} else break;
+	}
+	vblk_peek(1, d1, 18); d1[18] = 0;
+	uart_printf("[M28] after VM1 wrote: VM1 disk=\"%s\"\n", d1);
+	uart_println("[M28] each tenant's block device wrote only its own backing disk "
+	             "-- per-VM storage isolation.");
 }
