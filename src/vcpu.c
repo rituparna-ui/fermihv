@@ -80,6 +80,7 @@ void vcpu_init(vcpu_t *v, uint64_t entry, uint64_t sp_el1, uint64_t vttbr,
 	v->sp_el1 = sp_el1;
 	v->sctlr_el1 = SCTLR_EL1_RESET;
 	v->vttbr = vttbr;
+	v->vmpidr = (1UL << 31) | (uint64_t)id;   /* RES1 | Aff0 = cpu id */
 	v->id = id;
 	v->halted = 0;
 }
@@ -87,6 +88,7 @@ void vcpu_init(vcpu_t *v, uint64_t entry, uint64_t sp_el1, uint64_t vttbr,
 void vcpu_run_once(vcpu_t *v) {
 	restore_el1_sysregs(v);
 	wr_sysreg("vttbr_el2", v->vttbr);
+	wr_sysreg("vmpidr_el2", v->vmpidr);
 	/* Restore this vCPU's virtual GIC context (list register + CPU interface
 	 * control + active priorities) so interrupt state is per-vCPU. */
 	__asm__ volatile("msr ich_vmcr_el2, %0" ::"r"(v->ich_vmcr));
@@ -1083,8 +1085,10 @@ void linux_vgic_boot(void) {
 
 	uint64_t hcr = (1UL << 31) | (1UL << 0) | (1UL << 19) | (1UL << 4); /* RW|VM|TSC|IMO */
 	wr_sysreg("hcr_el2", hcr);
-	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"(1UL));
+	__asm__ volatile("msr ich_hcr_el2, %0" ::"r"((1UL << 0) | (1UL << 8))); /* En|TC */
 	__asm__ volatile("isb");
+
+	vgic_set_ngicr(2);                   /* present two redistributor frames */
 
 	vcpu_init(&vcpus[0], 0x41000000UL, 0, stage2_vttbr(), 0);
 	vcpus[0].x[0] = 0x48000000UL;        /* arm64 boot: x0 = DTB */
@@ -1092,65 +1096,91 @@ void linux_vgic_boot(void) {
 	vcpus[0].x[2] = 0;
 	vcpus[0].x[3] = 0;
 
-	uart_println("[M31] booting Linux on the EMULATED vGIC (no GIC/UART/device");
-	uart_println("      passthrough): timer + UART RX interrupt (SPI 33) routed");
-	uart_println("      through the vGIC -> a fully interactive shell. Kernel output:");
+	uart_println("[M32] booting SMP Linux (2 vCPUs) on the EMULATED vGIC:");
+	uart_println("      per-vCPU redistributor frames + PSCI CPU_ON + UART SPI,");
+	uart_println("      time-sliced on one physical core. Kernel output:");
 	uart_println("------------------------------------------------------------");
 
+	psci_on_pending = 0;
+	int ncpu = 1, cur = 0;
 	hyptimer_start(10);
 	for (;;) {
-		/* Forward a host keystroke into the guest's emulated UART and raise its
-		 * receive interrupt as a virtual SPI (UART0 = SPI 1 -> INTID 33). */
+		/* Bring up the secondary vCPU when Linux issues PSCI CPU_ON. */
+		if (psci_on_pending && ncpu < 2) {
+			vcpu_init(&vcpus[1], psci_on_entry, 0, stage2_vttbr(), 1);
+			vcpus[1].x[0] = psci_on_ctx;
+			ncpu = 2;
+			psci_on_pending = 0;
+			uart_printf("\n[M32] PSCI CPU_ON: starting secondary vCPU1 at "
+			            "entry=%x\n", psci_on_entry);
+		}
+		/* Host keystroke -> emulated UART RX -> UART SPI (33) into CPU0. */
 		int ch = uart_getc_nonblock();
 		if (ch >= 0) {
 			vuart_push_rx(ch);
 			if (vuart_rx_irq_pending() && vgic_spi_enabled(0, 33))
 				vgic_inject(&vcpus[0], 33);
 		}
-		vcpu_run_once(&vcpus[0]);
-		if (vcpus[0].halted)
+		/* Deliver a pending inter-CPU IPI (SGI) to the vCPU about to run. */
+		int sgi = vgic_pop_sgi(cur);
+		if (sgi >= 0)
+			vgic_inject(&vcpus[cur], (uint32_t)sgi);
+
+		vcpu_run_once(&vcpus[cur]);
+		if (vcpus[cur].halted)
 			break;
 
-		uint64_t reason = vcpus[0].exit_reason;
-		uint64_t ec = ESR_EC(vcpus[0].exit_esr);
+		uint64_t reason = vcpus[cur].exit_reason;
+		uint64_t ec = ESR_EC(vcpus[cur].exit_esr);
 		if ((reason & 3) == 1) {
 			uint64_t iar = gic_ack();
 			uint32_t id = iar & 0xFFFFFF;
 			if (id == HYP_TIMER_PPI) {
 				hyptimer_on_irq();
-				if (vgic_irq_enabled(0, 30))
-					vgic_inject(&vcpus[0], 30);
-				else if (vgic_irq_enabled(0, 27))
-					vgic_inject(&vcpus[0], 27);
+				/* deliver a timer tick to the current vCPU's own timer PPI */
+				if (vgic_irq_enabled(cur, 30))
+					vgic_inject(&vcpus[cur], 30);
+				else if (vgic_irq_enabled(cur, 27))
+					vgic_inject(&vcpus[cur], 27);
+				if (ncpu == 2)
+					cur ^= 1;            /* time-slice between the two vCPUs */
 			}
 			if (id < GIC_SPURIOUS_INTID)
 				gic_eoi(iar);
 			continue;
 		}
 		if (ec == EC_DABT_LOW || ec == EC_IABT_LOW) {
-			uint64_t ipa = ((vcpus[0].exit_hpfar >> 4) << 12) |
-			               (vcpus[0].exit_far & 0xFFF);
+			uint64_t ipa = ((vcpus[cur].exit_hpfar >> 4) << 12) |
+			               (vcpus[cur].exit_far & 0xFFF);
 			if (vgic_contains(ipa))
-				vgic_mmio(0, &vcpus[0], ipa);
+				vgic_mmio(0, &vcpus[cur], ipa);  /* vm=0; GICR frame from address */
 			else if (vuart_contains(ipa))
-				mmio_emulate(&vcpus[0], ipa);
+				mmio_emulate(&vcpus[cur], ipa);
 			else
-				mmio_zero(&vcpus[0]);
+				mmio_zero(&vcpus[cur]);
 		} else if (ec == EC_SYSREG) {
-			cntp_emulate(0, &vcpus[0]);
+			uint64_t iss = ESR_ISS(vcpus[cur].exit_esr);
+			if (((iss >> 10) & 0xF) == 12) {  /* ICC_SGI1R_EL1: inter-CPU IPI */
+				int rt = (iss >> 5) & 0x1F;
+				uint64_t val = (rt == 31) ? 0 : vcpus[cur].x[rt];
+				vgic_post_sgi(cur, (uint32_t)((val >> 24) & 0xF));
+				vcpus[cur].pc += 4;
+			} else {
+				cntp_emulate(cur, &vcpus[cur]);
+			}
 		} else if (ec == EC_SMC64) {
-			psci_handle(&vcpus[0]);
-			vcpus[0].pc += 4;
+			psci_handle(&vcpus[cur]);
+			vcpus[cur].pc += 4;
 		} else if (ec == EC_HVC64) {
-			psci_handle(&vcpus[0]);
+			psci_handle(&vcpus[cur]);
 		} else {
-			uart_printf("\n[M20] Linux trap ec=%x (%s) far=%x elr=%x\n",
-			            ec, ec_name(ec), vcpus[0].exit_far, vcpus[0].pc);
+			uart_printf("\n[M32] CPU%d trap ec=%x (%s) far=%x elr=%x\n",
+			            cur, ec, ec_name(ec), vcpus[cur].exit_far, vcpus[cur].pc);
 			break;
 		}
 	}
 	uart_println("------------------------------------------------------------");
-	uart_println("[M20] Linux-on-vGIC run ended.");
+	uart_println("[M32] SMP-Linux-on-vGIC run ended.");
 }
 
 /* ------------------------------------------------------------------ */

@@ -41,6 +41,7 @@ typedef struct vcpu {
 
 	/* --- VM config / bookkeeping --- */
 	uint64_t vttbr;       /* stage-2 base + VMID for this vCPU */
+	uint64_t vmpidr;      /* virtual MPIDR_EL1 (affinity) seen by the guest */
 	int      id;
 	int      halted;
 } vcpu_t;

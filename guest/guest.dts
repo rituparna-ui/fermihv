@@ -357,6 +357,10 @@
 					core0 {
 						cpu = <0x8001>;
 					};
+
+					core1 {
+						cpu = <0x8010>;
+					};
 				};
 			};
 		};
@@ -366,6 +370,15 @@
 			reg = <0x00>;
 			compatible = "arm,cortex-a72";
 			device_type = "cpu";
+			enable-method = "psci";
+		};
+
+		cpu@1 {
+			phandle = <0x8010>;
+			reg = <0x01>;
+			compatible = "arm,cortex-a72";
+			device_type = "cpu";
+			enable-method = "psci";
 		};
 	};
 

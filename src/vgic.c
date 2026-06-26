@@ -119,11 +119,16 @@ void vgic_mmio(int vm, vcpu_t *v, uint64_t ipa) {
 	}
 	int wnr = (iss >> 6) & 1;
 	int srt = (iss >> 16) & 0x1F;
+	int sas = (iss >> 22) & 3;          /* access size: 3 = 64-bit */
 	if (wnr) {
-		uint32_t val = (srt == 31) ? 0 : (uint32_t)v->x[srt];
-		reg_write(vm, ipa, val);
+		uint64_t val = (srt == 31) ? 0 : v->x[srt];
+		reg_write(vm, ipa, (uint32_t)val);
+		if (sas == 3)
+			reg_write(vm, ipa + 4, (uint32_t)(val >> 32));
 	} else {
-		uint32_t val = reg_read(vm, ipa);
+		uint64_t val = reg_read(vm, ipa);
+		if (sas == 3)
+			val |= (uint64_t)reg_read(vm, ipa + 4) << 32;
 		if (srt != 31)
 			v->x[srt] = val;
 	}
