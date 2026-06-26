@@ -50,6 +50,7 @@ enumeration, and PSCI, all hosted by the from-scratch EL2 hypervisor.
 | M30 | **Per-vCPU GICR frames**: each vCPU owns a redistributor at a distinct address |
 | M31 | **Interactive Linux on the emulated vGIC**: UART RX IRQ routed as a vGIC SPI |
 | M32 | **Multi-vCPU (SMP) Linux** on the emulated vGIC: 2 CPUs via PSCI + per-vCPU GICR + IPIs |
+| M33 | **Multiple list registers**: up to 4 concurrent virtual IRQs per vCPU |
 
 ## Architecture
 

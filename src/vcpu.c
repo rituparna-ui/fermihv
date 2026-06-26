@@ -89,16 +89,22 @@ void vcpu_run_once(vcpu_t *v) {
 	restore_el1_sysregs(v);
 	wr_sysreg("vttbr_el2", v->vttbr);
 	wr_sysreg("vmpidr_el2", v->vmpidr);
-	/* Restore this vCPU's virtual GIC context (list register + CPU interface
+	/* Restore this vCPU's virtual GIC context (list registers + CPU interface
 	 * control + active priorities) so interrupt state is per-vCPU. */
 	__asm__ volatile("msr ich_vmcr_el2, %0" ::"r"(v->ich_vmcr));
 	__asm__ volatile("msr ich_ap1r0_el2, %0" ::"r"(v->ich_ap1r0));
-	__asm__ volatile("msr ich_lr0_el2, %0" ::"r"(v->ich_lr0));
+	__asm__ volatile("msr ich_lr0_el2, %0" ::"r"(v->ich_lr[0]));
+	__asm__ volatile("msr ich_lr1_el2, %0" ::"r"(v->ich_lr[1]));
+	__asm__ volatile("msr ich_lr2_el2, %0" ::"r"(v->ich_lr[2]));
+	__asm__ volatile("msr ich_lr3_el2, %0" ::"r"(v->ich_lr[3]));
 	__asm__ volatile("isb");
 	__guest_enter(v);          /* returns when the guest traps back to EL2 */
-	/* Capture any updated virtual GIC state (e.g. an IRQ the guest acked but
+	/* Capture any updated virtual GIC state (e.g. IRQs the guest acked but
 	 * has not yet EOI'd) back into the vCPU before switching away. */
-	__asm__ volatile("mrs %0, ich_lr0_el2" : "=r"(v->ich_lr0));
+	__asm__ volatile("mrs %0, ich_lr0_el2" : "=r"(v->ich_lr[0]));
+	__asm__ volatile("mrs %0, ich_lr1_el2" : "=r"(v->ich_lr[1]));
+	__asm__ volatile("mrs %0, ich_lr2_el2" : "=r"(v->ich_lr[2]));
+	__asm__ volatile("mrs %0, ich_lr3_el2" : "=r"(v->ich_lr[3]));
 	__asm__ volatile("mrs %0, ich_vmcr_el2" : "=r"(v->ich_vmcr));
 	__asm__ volatile("mrs %0, ich_ap1r0_el2" : "=r"(v->ich_ap1r0));
 	save_el1_sysregs(v);
@@ -191,8 +197,23 @@ void sched_demo(void) {
 /* Inject a virtual IRQ into vCPU `v` by setting its saved list register; it is
  * loaded into the live ICH_LR0 the next time the vCPU runs. State = pending,
  * Group 1. */
+/* Inject a virtual IRQ into vCPU `v` by placing it in a free list register; the
+ * LRs are loaded into the live ICH_LR<n> the next time the vCPU runs. State =
+ * pending, Group 1. If a slot already holds this INTID (pending or active) we
+ * keep it; if all four LRs are busy the injection is dropped (the guest will
+ * re-trigger). */
 static void vgic_inject(vcpu_t *v, uint32_t vintid) {
-	v->ich_lr0 = (1ULL << 62) | (1ULL << 60) | (uint64_t)vintid;
+	uint64_t lr = (1ULL << 62) | (1ULL << 60) | (uint64_t)vintid;
+	int free_slot = -1;
+	for (int i = 0; i < 4; i++) {
+		uint64_t state = (v->ich_lr[i] >> 62) & 3;
+		if (state != 0 && (v->ich_lr[i] & 0xFFFFFFFF) == vintid)
+			return;                       /* already queued */
+		if (state == 0 && free_slot < 0)
+			free_slot = i;
+	}
+	if (free_slot >= 0)
+		v->ich_lr[free_slot] = lr;
 }
 
 void virq_demo(int nticks) {

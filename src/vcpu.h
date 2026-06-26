@@ -35,7 +35,7 @@ typedef struct vcpu {
 	uint64_t tpidr_el0, tpidrro_el0, tpidr_el1;
 
 	/* --- per-vCPU virtual GIC context (saved/restored across switches) --- */
-	uint64_t ich_lr0;     /* List Register 0: pending/active virtual IRQ */
+	uint64_t ich_lr[4];   /* List Registers 0-3: pending/active virtual IRQs */
 	uint64_t ich_vmcr;    /* virtual CPU interface control (VENG/VPMR/...)  */
 	uint64_t ich_ap1r0;   /* virtual active priorities (group 1)            */
 
