@@ -1092,12 +1092,21 @@ void linux_vgic_boot(void) {
 	vcpus[0].x[2] = 0;
 	vcpus[0].x[3] = 0;
 
-	uart_println("[M20] booting Linux on the EMULATED vGIC (no GIC/UART/device");
-	uart_println("      passthrough; timer trapped + injected). Kernel output:");
+	uart_println("[M31] booting Linux on the EMULATED vGIC (no GIC/UART/device");
+	uart_println("      passthrough): timer + UART RX interrupt (SPI 33) routed");
+	uart_println("      through the vGIC -> a fully interactive shell. Kernel output:");
 	uart_println("------------------------------------------------------------");
 
 	hyptimer_start(10);
 	for (;;) {
+		/* Forward a host keystroke into the guest's emulated UART and raise its
+		 * receive interrupt as a virtual SPI (UART0 = SPI 1 -> INTID 33). */
+		int ch = uart_getc_nonblock();
+		if (ch >= 0) {
+			vuart_push_rx(ch);
+			if (vuart_rx_irq_pending() && vgic_spi_enabled(0, 33))
+				vgic_inject(&vcpus[0], 33);
+		}
 		vcpu_run_once(&vcpus[0]);
 		if (vcpus[0].halted)
 			break;

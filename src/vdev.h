@@ -12,6 +12,11 @@
 /* True if an IPA falls inside the emulated UART window. */
 int vuart_contains(uint64_t ipa);
 
+/* Push a host input byte into the emulated UART; query whether it is now
+ * asserting a receive interrupt (byte pending and RX unmasked by the guest). */
+void vuart_push_rx(int c);
+int vuart_rx_irq_pending(void);
+
 /* Emulate the trapped guest load/store at `ipa` by decoding ESR_EL2.ISS in
  * v->exit_esr, performing the device side effect, writing back any loaded
  * value into the guest register file, and advancing the guest PC past the

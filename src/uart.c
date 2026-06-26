@@ -19,6 +19,15 @@ void uart_putc(char c) {
 	mmio_write32(UART_DR, (uint32_t)(uint8_t)c);
 }
 
+/* Non-blocking read of the real console: returns the next input byte, or -1 if
+ * the RX FIFO is empty (FR.RXFE set). Used to forward host keystrokes into a
+ * guest's emulated UART. */
+int uart_getc_nonblock(void) {
+	if (mmio_read32(UART_FR) & (1 << 4))   /* RXFE: receive FIFO empty */
+		return -1;
+	return (int)(mmio_read32(UART_DR) & 0xFF);
+}
+
 void uart_puts(const char *s) {
 	while (*s) {
 		if (*s == '\n')

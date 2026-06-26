@@ -15,6 +15,7 @@
 
 void uart_init(void);
 void uart_putc(char c);
+int uart_getc_nonblock(void);   /* real-console input byte, or -1 if none */
 void uart_puts(const char *s);
 void uart_println(const char *s);
 void uart_puthex(uint64_t v);

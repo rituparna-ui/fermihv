@@ -28,6 +28,9 @@ void vgic_mmio(int vm, vcpu_t *v, uint64_t ipa);
 /* Has VM `vm`'s guest enabled this INTID (SGI/PPI) in its emulated GIC? */
 int vgic_irq_enabled(int vm, uint32_t intid);
 
+/* Has VM `vm`'s guest enabled this SPI (INTID >= 32) in its GICD? */
+int vgic_spi_enabled(int vm, uint32_t intid);
+
 /* --- virtual SGIs (inter-processor interrupts) --- */
 
 /* Set the number of redistributor frames presented (GICR_TYPER.Last is set on

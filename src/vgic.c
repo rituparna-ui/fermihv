@@ -13,6 +13,7 @@ struct vgic_state {
 	uint32_t gicd_ctlr;
 	uint32_t enabled;    /* SGI/PPI enable bitmap (INTID 0..31) */
 	uint32_t group;      /* GICR_IGROUPR0 */
+	uint32_t spi_enabled[8]; /* GICD SPI enable bitmap (INTID 32..255) */
 };
 
 static struct vgic_state vg[VGIC_MAX_VCPUS];          /* indexed by VM */
@@ -32,12 +33,21 @@ void vgic_reset(void) {
 		vg[i].gicd_ctlr = 0;
 		vg[i].enabled = 0;
 		vg[i].group = 0;
+		for (int j = 0; j < 8; j++)
+			vg[i].spi_enabled[j] = 0;
 		g_sgi_pending[i] = 0;
 	}
 }
 
 int vgic_irq_enabled(int vm, uint32_t intid) {
 	return intid < 32 && (vg[vm].enabled & (1u << intid));
+}
+
+/* Has VM `vm`'s guest enabled this SPI (INTID >= 32) in its GICD? */
+int vgic_spi_enabled(int vm, uint32_t intid) {
+	if (intid < 32 || intid >= 256)
+		return 0;
+	return (vg[vm].spi_enabled[intid >> 5] & (1u << (intid & 31))) != 0;
 }
 
 static uint32_t reg_read(int vm, uint64_t ipa) {
@@ -66,7 +76,13 @@ static uint32_t reg_read(int vm, uint64_t ipa) {
 	case 0x0004: return 0x0007 | (9u << 19); /* GICD_TYPER: 256 INTIDs, IDbits=9 */
 	case 0x0008: return 0;                /* GICD_IIDR */
 	case 0xFFE8: return 0x30;             /* GICD_PIDR2: GICv3 */
-	default: return 0;
+	default:
+		/* GICD_ISENABLER<n> (0x100) / ICENABLER<n> (0x180): SPI enable bitmap */
+		if (off >= 0x100 && off < 0x180)
+			return vg[vm].spi_enabled[(off - 0x100) / 4 % 8];
+		if (off >= 0x180 && off < 0x200)
+			return vg[vm].spi_enabled[(off - 0x180) / 4 % 8];
+		return 0;
 	}
 }
 
@@ -86,8 +102,13 @@ static void reg_write(int vm, uint64_t ipa, uint32_t val) {
 		return;
 	}
 	uint64_t off = ipa - VGIC_GICD_BASE;
-	if (off == 0x0000)
+	if (off == 0x0000) {
 		vg[vm].gicd_ctlr = val;           /* GICD_CTLR */
+	} else if (off >= 0x100 && off < 0x180) {
+		vg[vm].spi_enabled[(off - 0x100) / 4 % 8] |= val;   /* GICD_ISENABLER */
+	} else if (off >= 0x180 && off < 0x200) {
+		vg[vm].spi_enabled[(off - 0x180) / 4 % 8] &= ~val;  /* GICD_ICENABLER */
+	}
 }
 
 void vgic_mmio(int vm, vcpu_t *v, uint64_t ipa) {
